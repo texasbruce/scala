@@ -50,5 +50,8 @@
 /project/project/target/
 /project/project/project/target/
 /test/macro-annot/target/
+/test/files/target/
+/test/target/
 /build-sbt/
 local.sbt
+jitwatch.out

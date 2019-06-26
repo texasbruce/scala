@@ -45,9 +45,6 @@ import scala.math.Ordering
   *  @tparam A    type of the elements in this priority queue.
   *  @param ord   implicit ordering used to compare the elements of type `A`.
   *
-  *  @author  Matthias Zenger
-  *  @since   1
-  *
   *  @define Coll PriorityQueue
   *  @define coll priority queue
   *  @define orderDependent
@@ -63,10 +60,18 @@ sealed class PriorityQueue[A](implicit val ord: Ordering[A])
     with Builder[A, PriorityQueue[A]]
     with Cloneable[PriorityQueue[A]]
     with Growable[A]
+    with Serializable
 {
   import ord._
 
   private class ResizableArrayAccess[A0] extends ArrayBuffer[A0] {
+    override def mapInPlace(f: A0 => A0): this.type = {
+      var i = 1 // see "we do not use array(0)" comment below (???)
+      val siz = size
+      while (i < siz) { this(i) = f(this(i)); i += 1 }
+      this
+    }
+
     def p_size0 = size0
     def p_size0_=(s: Int) = size0 = s
     def p_array = array
@@ -80,14 +85,16 @@ sealed class PriorityQueue[A](implicit val ord: Ordering[A])
 
   private val resarr = new ResizableArrayAccess[A]
 
-  resarr.p_size0 += 1                  // we do not use array(0)
+  resarr.p_size0 += 1                  // we do not use array(0) TODO: explain -- what is the first element even for?
   def length: Int = resarr.length - 1  // adjust length accordingly
   override def size: Int = length
   override def knownSize: Int = length
   override def isEmpty: Boolean = resarr.p_size0 < 2
 
+  // not eligible for EvidenceIterableFactoryDefaults since C != CC[A] (PriorityQueue[A] != Iterable[A])
   override protected def fromSpecific(coll: scala.collection.IterableOnce[A]): PriorityQueue[A] = PriorityQueue.from(coll)
   override protected def newSpecificBuilder: Builder[A, PriorityQueue[A]] = PriorityQueue.newBuilder
+  override def empty: PriorityQueue[A] = PriorityQueue.empty
 
   def mapInPlace(f: A => A): this.type = {
     resarr.mapInPlace(f)
@@ -248,7 +255,10 @@ sealed class PriorityQueue[A](implicit val ord: Ordering[A])
   /** Removes all elements from the queue. After this operation is completed,
     *  the queue will be empty.
     */
-  def clear(): Unit = { resarr.p_size0 = 1 }
+  def clear(): Unit = {
+    resarr.clear()
+    resarr.p_size0 = 1
+  }
 
   /** Returns an iterator which yields all the elements.
     *
@@ -271,7 +281,7 @@ sealed class PriorityQueue[A](implicit val ord: Ordering[A])
     *
     *  @return   the reversed priority queue.
     */
-  def reverse = {
+  def reverse: PriorityQueue[A] = {
     val revq = new PriorityQueue[A]()(ord.reverse)
     // copy the existing data into the new array backwards
     // this won't put it exactly into the correct order,
@@ -351,7 +361,7 @@ sealed class PriorityQueue[A](implicit val ord: Ordering[A])
   @deprecated("Use `PriorityQueue` instead", "2.13.0")
   def orderedCompanion: PriorityQueue.type = PriorityQueue
 
-  override protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(PriorityQueue.evidenceIterableFactory[A], this)
+  protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(PriorityQueue.evidenceIterableFactory[A], this)
 
   override protected[this] def className = "PriorityQueue"
 }

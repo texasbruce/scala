@@ -14,17 +14,19 @@ package scala
 package collection
 package immutable
 
+import scala.annotation.unchecked.uncheckedVariance
 import scala.language.higherKinds
 
 /** Base trait for sorted sets */
 trait SortedSet[A]
   extends Set[A]
      with collection.SortedSet[A]
-     with SortedSetOps[A, SortedSet, SortedSet[A]] {
+     with SortedSetOps[A, SortedSet, SortedSet[A]]
+     with SortedSetFactoryDefaults[A, SortedSet, Set] {
 
   override def unsorted: Set[A] = this
 
-  override def sortedIterableFactory: SortedIterableFactory[SortedIterableCC] = SortedSet
+  override def sortedIterableFactory: SortedIterableFactory[SortedSet] = SortedSet
 }
 
 /**
@@ -38,10 +40,21 @@ trait SortedSetOps[A, +CC[X] <: SortedSet[X], +C <: SortedSetOps[A, CC, C]]
   def unsorted: Set[A]
 }
 
+trait StrictOptimizedSortedSetOps[A, +CC[X] <: SortedSet[X], +C <: SortedSetOps[A, CC, C]]
+  extends SortedSetOps[A, CC, C]
+    with collection.StrictOptimizedSortedSetOps[A, CC, C]
+    with StrictOptimizedSetOps[A, Set, C] {
+}
+
 /**
   * $factoryInfo
   * @define coll immutable sorted set
   * @define Coll `immutable.SortedSet`
   */
 @SerialVersionUID(3L)
-object SortedSet extends SortedIterableFactory.Delegate[SortedSet](TreeSet)
+object SortedSet extends SortedIterableFactory.Delegate[SortedSet](TreeSet) {
+  override def from[E: Ordering](it: IterableOnce[E]): SortedSet[E] = it match {
+    case ss: SortedSet[E] if Ordering[E] == ss.ordering => ss
+    case _ => super.from(it)
+  }
+}

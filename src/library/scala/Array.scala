@@ -30,9 +30,6 @@ import scala.runtime.ScalaRunTime.{array_apply, array_update}
  *  }}}
  *  where the array objects `a`, `b` and `c` have respectively the values
  *  `Array(1, 2)`, `Array(0, 0)` and `Array(1, 2, 0, 0)`.
- *
- *  @author Martin Odersky
- *  @since  1.0
  */
 object Array {
   val emptyBooleanArray = new Array[Boolean](0)
@@ -188,8 +185,11 @@ object Array {
   // Array(e0, ..., en) is translated to { val a = new Array(3); a(i) = ei; a }
   def apply[T: ClassTag](xs: T*): Array[T] = {
     val array = new Array[T](xs.length)
+    val iterator = xs.iterator
     var i = 0
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -198,8 +198,11 @@ object Array {
   def apply(x: Boolean, xs: Boolean*): Array[Boolean] = {
     val array = new Array[Boolean](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -208,8 +211,11 @@ object Array {
   def apply(x: Byte, xs: Byte*): Array[Byte] = {
     val array = new Array[Byte](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -218,8 +224,11 @@ object Array {
   def apply(x: Short, xs: Short*): Array[Short] = {
     val array = new Array[Short](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -228,8 +237,11 @@ object Array {
   def apply(x: Char, xs: Char*): Array[Char] = {
     val array = new Array[Char](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -238,8 +250,11 @@ object Array {
   def apply(x: Int, xs: Int*): Array[Int] = {
     val array = new Array[Int](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -248,8 +263,11 @@ object Array {
   def apply(x: Long, xs: Long*): Array[Long] = {
     val array = new Array[Long](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -258,8 +276,11 @@ object Array {
   def apply(x: Float, xs: Float*): Array[Float] = {
     val array = new Array[Float](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -268,8 +289,11 @@ object Array {
   def apply(x: Double, xs: Double*): Array[Double] = {
     val array = new Array[Double](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -277,8 +301,11 @@ object Array {
   def apply(x: Unit, xs: Unit*): Array[Unit] = {
     val array = new Array[Unit](xs.length + 1)
     array(0) = x
+    val iterator = xs.iterator
     var i = 1
-    for (x <- xs.iterator) { array(i) = x; i += 1 }
+    while (iterator.hasNext) {
+      array(i) = iterator.next(); i += 1
+    }
     array
   }
 
@@ -579,8 +606,6 @@ object Array {
  *  by converting to `ArraySeq` first and invoking the variant of `reverse` that returns another
  *  `ArraySeq`.
  *
- *  @author Martin Odersky
- *  @since  1.0
  *  @see [[http://www.scala-lang.org/files/archive/spec/2.13/ Scala Language Specification]], for in-depth information on the transformations the Scala compiler makes on Arrays (Sections 6.6 and 6.15 respectively.)
  *  @see [[http://docs.scala-lang.org/sips/completed/scala-2-8-arrays.html "Scala 2.8 Arrays"]] the Scala Improvement Document detailing arrays since Scala 2.8.
  *  @see [[http://docs.scala-lang.org/overviews/collections/arrays.html "The Scala 2.8 Collections' API"]] section on `Array` by Martin Odersky for more information.

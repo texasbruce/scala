@@ -15,10 +15,6 @@ package scala
 /** This class implements errors which are thrown whenever an
  *  object doesn't match any pattern of a pattern matching
  *  expression.
- *
- *  @author  Matthias Zenger
- *  @author  Martin Odersky
- *  @since   2.0
  */
 final class MatchError(@transient obj: Any) extends RuntimeException {
   /** There's no reason we need to call toString eagerly,

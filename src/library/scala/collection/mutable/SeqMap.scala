@@ -24,14 +24,15 @@ package mutable
   * @tparam K      the type of the keys contained in this linked map.
   * @tparam V      the type of the values associated with the keys in this linked map.
   *
-  * @author Matthew de Detrich
-  * @version 2.13
-  * @since 2.13
   * @define coll mutable Seq map
   * @define Coll `mutable.SeqMap`
   */
 
-trait SeqMap[K, V] extends AbstractMap[K, V]
+trait SeqMap[K, V] extends Map[K, V]
+  with collection.SeqMap[K, V]
   with MapOps[K, V, SeqMap, SeqMap[K, V]]
+  with MapFactoryDefaults[K, V, SeqMap, Iterable] {
+  override def mapFactory: MapFactory[SeqMap] = SeqMap
+}
 
 object SeqMap extends MapFactory.Delegate[SeqMap](LinkedHashMap)

@@ -16,8 +16,9 @@ package io
 
 import scala.language.implicitConversions
 
-import java.io.{ RandomAccessFile, File => JFile }
-import java.net.{ URI, URL }
+import java.io.{RandomAccessFile, File => JFile}
+import java.net.{URI, URL}
+import scala.annotation.tailrec
 import scala.util.Random.alphanumeric
 
 /** An abstraction for filesystem paths.  The differences between
@@ -30,9 +31,6 @@ import scala.util.Random.alphanumeric
  *
  *  Also available are createFile and createDirectory, which attempt
  *  to create the path in question.
- *
- *  @author  Paul Phillips
- *  @since   2.8
  *
  *  ''Note:  This library is considered experimental and should not be used unless you know what you are doing.''
  */
@@ -135,6 +133,7 @@ class Path private[io] (val jfile: JFile) {
   def relativize(other: Path) = {
     assert(isAbsolute == other.isAbsolute, "Paths not of same type: "+this+", "+other)
 
+    @tailrec
     def createRelativePath(baseSegs: List[String], otherSegs: List[String]) : String = {
       (baseSegs, otherSegs) match {
         case (b :: bs, o :: os) if b == o => createRelativePath(bs, os)

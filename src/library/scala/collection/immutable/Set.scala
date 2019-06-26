@@ -14,16 +14,18 @@ package scala
 package collection
 package immutable
 
-import java.io.{ObjectInputStream, ObjectOutputStream}
 
 import scala.collection.immutable.Set.Set4
-import scala.collection.mutable.{Builder, ImmutableBuilder}
+import scala.collection.mutable.{Builder, ReusableBuilder}
 import scala.language.higherKinds
 
 
 /** Base trait for immutable set collections */
-trait Set[A] extends Iterable[A] with collection.Set[A] with SetOps[A, Set, Set[A]] {
-  override def iterableFactory: IterableFactory[IterableCC] = Set
+trait Set[A] extends Iterable[A]
+    with collection.Set[A]
+    with SetOps[A, Set, Set[A]]
+    with IterableFactoryDefaults[A, Set] {
+  override def iterableFactory: IterableFactory[Set] = Set
 }
 
 /** Base trait for immutable set operations
@@ -44,8 +46,7 @@ trait SetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
   def incl(elem: A): C
 
   /** Alias for `incl` */
-  @deprecatedOverriding("This method should be final, but is not due to scala/bug#10853", "2.13.0")
-  override /*final*/ def + (elem: A): C = incl(elem) // like in collection.Set but not deprecated
+  override final def + (elem: A): C = incl(elem) // like in collection.Set but not deprecated
 
   /** Creates a new set with a given element removed from this set.
     *
@@ -56,15 +57,7 @@ trait SetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
   def excl(elem: A): C
 
   /** Alias for `excl` */
-  @deprecatedOverriding("This method should be final, but is not due to scala/bug#10853", "2.13.0")
-  /*@`inline` final*/ override def - (elem: A): C = excl(elem)
-
-  override def concat(that: collection.IterableOnce[A]): C = {
-    var result: C = coll
-    val it = that.iterator
-    while (it.hasNext) result = result + it.next()
-    result
-  }
+  @`inline` final override def - (elem: A): C = excl(elem)
 
   def diff(that: collection.Set[A]): C =
     toIterable.foldLeft(empty)((result, elem) => if (that contains elem) result else result + elem)
@@ -75,11 +68,23 @@ trait SetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
     *  @param that the collection containing the elements to remove.
     *  @return a new $coll with the given elements removed, omitting duplicates.
     */
-  def removeAll(that: IterableOnce[A]): C = that.iterator.foldLeft[C](coll)(_ - _)
+  def removedAll(that: IterableOnce[A]): C = that.iterator.foldLeft[C](coll)(_ - _)
 
-  /** Alias for removeAll */
-  @deprecatedOverriding("This method should be final, but is not due to scala/bug#10853", "2.13.0")
-  override /*final*/ def -- (that: IterableOnce[A]): C = removeAll(that)
+  /** Alias for removedAll */
+  override final def -- (that: IterableOnce[A]): C = removedAll(that)
+}
+
+trait StrictOptimizedSetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
+  extends SetOps[A, CC, C]
+    with collection.StrictOptimizedSetOps[A, CC, C]
+    with StrictOptimizedIterableOps[A, CC, C] {
+
+  override def concat(that: collection.IterableOnce[A]): C = {
+    var result: C = coll
+    val it = that.iterator
+    while (it.hasNext) result = result + it.next()
+    result
+  }
 }
 
 /**
@@ -102,16 +107,21 @@ object Set extends IterableFactory[Set] {
       case _                       => (newBuilder[E] ++= it).result()
     }
 
-  def newBuilder[A]: Builder[A, Set[A]] =
-    new ImmutableBuilder[A, Set[A]](empty) {
-      def addOne(elem: A): this.type = { elems = elems + elem; this }
-    }
+  def newBuilder[A]: Builder[A, Set[A]] = new SetBuilderImpl[A]
 
   /** An optimized representation for immutable empty sets */
-  private object EmptySet extends AbstractSet[Any] {
+  @SerialVersionUID(3L)
+  private object EmptySet extends AbstractSet[Any] with Serializable {
     override def size: Int = 0
     override def isEmpty = true
     override def knownSize: Int = size
+    override def filter(pred: Any => Boolean): Set[Any] = this
+    override def filterNot(pred: Any => Boolean): Set[Any] = this
+    override def removedAll(that: IterableOnce[Any]): Set[Any] = this
+    override def diff(that: collection.Set[Any]): Set[Any] = this
+    override def subsetOf(that: collection.Set[Any]): Boolean = true
+    override def intersect(that: collection.Set[Any]): Set[Any] = this
+    override def view: View[Any] = View.empty
     def contains(elem: Any): Boolean = false
     def incl(elem: Any): Set[Any] = new Set1(elem)
     def excl(elem: Any): Set[Any] = this
@@ -121,7 +131,8 @@ object Set extends IterableFactory[Set] {
   private[collection] def emptyInstance: Set[Any] = EmptySet
 
   /** An optimized representation for immutable sets of size 1 */
-  final class Set1[A] private[collection] (elem1: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] {
+  @SerialVersionUID(3L)
+  final class Set1[A] private[collection] (elem1: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] with Serializable {
     override def size: Int = 1
     override def isEmpty = false
     override def knownSize: Int = size
@@ -144,7 +155,8 @@ object Set extends IterableFactory[Set] {
   }
 
   /** An optimized representation for immutable sets of size 2 */
-  final class Set2[A] private[collection] (elem1: A, elem2: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] {
+  @SerialVersionUID(3L)
+  final class Set2[A] private[collection] (elem1: A, elem2: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] with Serializable {
     override def size: Int = 2
     override def isEmpty = false
     override def knownSize: Int = size
@@ -176,7 +188,8 @@ object Set extends IterableFactory[Set] {
   }
 
   /** An optimized representation for immutable sets of size 3 */
-  final class Set3[A] private[collection] (elem1: A, elem2: A, elem3: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] {
+  @SerialVersionUID(3L)
+  final class Set3[A] private[collection] (elem1: A, elem2: A, elem3: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] with Serializable {
     override def size: Int = 3
     override def isEmpty = false
     override def knownSize: Int = size
@@ -211,7 +224,8 @@ object Set extends IterableFactory[Set] {
   }
 
   /** An optimized representation for immutable sets of size 4 */
-  final class Set4[A] private[collection] (elem1: A, elem2: A, elem3: A, elem4: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] {
+  @SerialVersionUID(3L)
+  final class Set4[A] private[collection] (elem1: A, elem2: A, elem3: A, elem4: A) extends AbstractSet[A] with StrictOptimizedIterableOps[A, Set, Set[A]] with Serializable {
     override def size: Int = 4
     override def isEmpty = false
     override def knownSize: Int = size
@@ -256,7 +270,10 @@ object Set extends IterableFactory[Set] {
 abstract class AbstractSet[A] extends scala.collection.AbstractSet[A] with Set[A]
 
 
-private final class SetBuilderImpl[A] extends Builder[A, Set[A]] {
+/** Builder for Set.
+  * $multipleResults
+  */
+private final class SetBuilderImpl[A] extends ReusableBuilder[A, Set[A]] {
   private[this] var elems: Set[A] = Set.empty
   private[this] var switchedToHashSetBuilder: Boolean = false
   private[this] var hashSetBuilder: HashSetBuilder[A] = _

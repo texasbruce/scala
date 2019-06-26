@@ -17,8 +17,7 @@ import java.lang.Integer.bitCount
 import java.lang.Math.ceil
 import java.lang.System.arraycopy
 
-private[immutable] final object Node {
-
+private[collection] object Node {
   final val HashCodeLength = 32
 
   final val BitPartitionSize = 5
@@ -26,12 +25,6 @@ private[immutable] final object Node {
   final val BitPartitionMask = (1 << BitPartitionSize) - 1
 
   final val MaxDepth = ceil(HashCodeLength.toDouble / BitPartitionSize).toInt
-
-  final val SizeEmpty = 0
-
-  final val SizeOne = 1
-
-  final val SizeMoreThanOne = 2
 
   final val BranchingFactor = 1 << BitPartitionSize
 
@@ -45,7 +38,7 @@ private[immutable] final object Node {
 
 }
 
-private[immutable] abstract class Node[T <: Node[T]] {
+private[collection] abstract class Node[T <: Node[T]] {
 
   def hasNodes: Boolean
 
@@ -61,11 +54,14 @@ private[immutable] abstract class Node[T <: Node[T]] {
 
   def getHash(index: Int): Int
 
-  def sizePredicate: Int
+  def cachedJavaKeySetHashCode: Int
+
+  private final def arrayIndexOutOfBounds(as: Array[_], ix:Int): ArrayIndexOutOfBoundsException =
+    new ArrayIndexOutOfBoundsException(s"$ix is out of bounds (min 0, max ${as.length-1}")
 
   protected final def removeElement(as: Array[Int], ix: Int): Array[Int] = {
-    if (ix < 0) throw new ArrayIndexOutOfBoundsException
-    if (ix > as.length - 1) throw new ArrayIndexOutOfBoundsException
+    if (ix < 0) throw arrayIndexOutOfBounds(as, ix)
+    if (ix > as.length - 1) throw arrayIndexOutOfBounds(as, ix)
     val result = new Array[Int](as.length - 1)
     arraycopy(as, 0, result, 0, ix)
     arraycopy(as, ix + 1, result, ix, as.length - ix - 1)
@@ -73,8 +69,8 @@ private[immutable] abstract class Node[T <: Node[T]] {
   }
 
   protected final def removeAnyElement(as: Array[Any], ix: Int): Array[Any] = {
-    if (ix < 0) throw new ArrayIndexOutOfBoundsException
-    if (ix > as.length - 1) throw new ArrayIndexOutOfBoundsException
+    if (ix < 0) throw arrayIndexOutOfBounds(as, ix)
+    if (ix > as.length - 1) throw arrayIndexOutOfBounds(as, ix)
     val result = new Array[Any](as.length - 1)
     arraycopy(as, 0, result, 0, ix)
     arraycopy(as, ix + 1, result, ix, as.length - ix - 1)
@@ -82,8 +78,8 @@ private[immutable] abstract class Node[T <: Node[T]] {
   }
 
   protected final def insertElement(as: Array[Int], ix: Int, elem: Int): Array[Int] = {
-    if (ix < 0) throw new ArrayIndexOutOfBoundsException
-    if (ix > as.length) throw new ArrayIndexOutOfBoundsException
+    if (ix < 0) throw arrayIndexOutOfBounds(as, ix)
+    if (ix > as.length) throw arrayIndexOutOfBounds(as, ix)
     val result = new Array[Int](as.length + 1)
     arraycopy(as, 0, result, 0, ix)
     result(ix) = elem
@@ -91,8 +87,8 @@ private[immutable] abstract class Node[T <: Node[T]] {
     result
   }
   protected final def insertAnyElement(as: Array[Any], ix: Int, elem: Int): Array[Any] = {
-    if (ix < 0) throw new ArrayIndexOutOfBoundsException
-    if (ix > as.length) throw new ArrayIndexOutOfBoundsException
+    if (ix < 0) throw arrayIndexOutOfBounds(as, ix)
+    if (ix > as.length) throw arrayIndexOutOfBounds(as, ix)
     val result = new Array[Any](as.length + 1)
     arraycopy(as, 0, result, 0, ix)
     result(ix) = elem
@@ -107,13 +103,16 @@ private[immutable] abstract class Node[T <: Node[T]] {
   * node before traversing sub-nodes (left to right).
   *
   * @tparam T the trie node type we are iterating over
-  *
-  * @author   Michael J. Steindorfer
   */
 private[immutable] abstract class ChampBaseIterator[T <: Node[T]] {
 
   import Node.MaxDepth
 
+  // Note--this code is duplicated to a large extent both in
+  // ChampBaseReverseIterator and in convert.impl.ChampStepperBase.
+  // If you change this code, check those also in case they also
+  // need to be modified.
+  
   protected var currentValueCursor: Int = 0
   protected var currentValueLength: Int = 0
   protected var currentValueNode: T = _
@@ -192,8 +191,6 @@ private[immutable] abstract class ChampBaseIterator[T <: Node[T]] {
   * iterator performs a depth-first post-order traversal, traversing sub-nodes (right to left).
   *
   * @tparam T the trie node type we are iterating over
-  *
-  * @author   Michael J. Steindorfer
   */
 private[immutable] abstract class ChampBaseReverseIterator[T <: Node[T]] {
 

@@ -13,10 +13,10 @@
 package scala
 package collection.mutable
 
-import collection.{SortedIterableFactory, StrictOptimizedIterableOps, StrictOptimizedSortedSetOps}
-import collection.mutable.{RedBlackTree => RB}
-
-import java.lang.String
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.generic.DefaultSerializable
+import scala.collection.mutable.{RedBlackTree => RB}
+import scala.collection.{SortedIterableFactory, SortedSetFactoryDefaults, Stepper, StepperShape, StrictOptimizedIterableOps, StrictOptimizedSortedSetOps}
 
 /**
   * A mutable sorted set implemented using a mutable red-black tree as underlying data structure.
@@ -24,19 +24,18 @@ import java.lang.String
   * @param ordering the implicit ordering used to compare objects of type `A`.
   * @tparam A the type of the keys contained in this tree set.
   *
-  * @author Rui Gonçalves
-  * @since 2.10
-  *
   * @define Coll mutable.TreeSet
   * @define coll mutable tree set
   */
 // Original API designed in part by Lucien Pereira
-sealed class TreeSet[A] private (tree: RB.Tree[A, Null])(implicit val ordering: Ordering[A])
+sealed class TreeSet[A] private (private val tree: RB.Tree[A, Null])(implicit val ordering: Ordering[A])
   extends AbstractSet[A]
     with SortedSet[A]
     with SortedSetOps[A, TreeSet, TreeSet[A]]
     with StrictOptimizedIterableOps[A, Set, TreeSet[A]]
-    with StrictOptimizedSortedSetOps[A, TreeSet, TreeSet[A]] {
+    with StrictOptimizedSortedSetOps[A, TreeSet, TreeSet[A]]
+    with SortedSetFactoryDefaults[A, TreeSet, Set]
+    with DefaultSerializable {
 
   if (ordering eq null)
     throw new NullPointerException("ordering must not be null")
@@ -48,11 +47,23 @@ sealed class TreeSet[A] private (tree: RB.Tree[A, Null])(implicit val ordering: 
     */
   def this()(implicit ord: Ordering[A]) = this(RB.Tree.empty)(ord)
 
-  def iterator: collection.Iterator[A] = RB.keysIterator(tree)
-
   override def sortedIterableFactory: SortedIterableFactory[TreeSet] = TreeSet
 
+  def iterator: collection.Iterator[A] = RB.keysIterator(tree)
+
   def iteratorFrom(start: A): collection.Iterator[A] = RB.keysIterator(tree, Some(start))
+
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[A, S]): S with EfficientSplit = {
+    import scala.collection.convert.impl._
+    type T = RB.Node[A, Null]
+    val s = shape.shape match {
+      case StepperShape.IntShape    => IntBinaryTreeStepper.from[T]   (size, tree.root, _.left, _.right, _.key.asInstanceOf[Int])
+      case StepperShape.LongShape   => LongBinaryTreeStepper.from[T]  (size, tree.root, _.left, _.right, _.key.asInstanceOf[Long])
+      case StepperShape.DoubleShape => DoubleBinaryTreeStepper.from[T](size, tree.root, _.left, _.right, _.key.asInstanceOf[Double])
+      case _         => shape.parUnbox(AnyBinaryTreeStepper.from[A, T](size, tree.root, _.left, _.right, _.key))
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
 
   def addOne(elem: A): this.type = {
     RB.insert(tree, elem, null)
@@ -176,15 +187,32 @@ sealed class TreeSet[A] private (tree: RB.Tree[A, Null])(implicit val ordering: 
   * $factoryInfo
   * @define Coll `mutable.TreeSet`
   * @define coll mutable tree set
-  * @author Lucien Pereira
   */
 @SerialVersionUID(3L)
 object TreeSet extends SortedIterableFactory[TreeSet] {
 
   def empty[A : Ordering]: TreeSet[A] = new TreeSet[A]()
 
-  def from[E : Ordering](it: collection.IterableOnce[E]): TreeSet[E] = Growable.from(empty[E], it)
+  def from[E](it: IterableOnce[E])(implicit ordering: Ordering[E]): TreeSet[E] =
+    it match {
+      case ts: TreeSet[E] if ordering == ts.ordering =>
+        new TreeSet[E](ts.tree.treeCopy())
+      case ss: scala.collection.SortedSet[E] if ordering == ss.ordering =>
+        new TreeSet[E](RB.fromOrderedKeys(ss.iterator, ss.size))
+      case r: Range if (ordering eq Ordering.Int) || (ordering eq Ordering.Int.reverse) =>
+        val it = if((ordering eq Ordering.Int) == (r.step > 0)) r.iterator else r.reverseIterator
+        new TreeSet[E](RB.fromOrderedKeys(it.asInstanceOf[Iterator[E]], r.size))
+      case _ =>
+        val t: RB.Tree[E, Null] = RB.Tree.empty
+        val i = it.iterator
+        while (i.hasNext) RB.insert(t, i.next(), null)
+        new TreeSet[E](t)
+    }
 
-  def newBuilder[A: Ordering]: Builder[A, TreeSet[A]] = new GrowableBuilder(empty[A])
-
+  def newBuilder[A](implicit ordering: Ordering[A]): Builder[A, TreeSet[A]] = new ReusableBuilder[A, TreeSet[A]] {
+    private[this] var tree: RB.Tree[A, Null] = RB.Tree.empty
+    def addOne(elem: A): this.type = { RB.insert(tree, elem, null); this }
+    def result(): TreeSet[A] = new TreeSet[A](tree)
+    def clear(): Unit = { tree = RB.Tree.empty }
+  }
 }

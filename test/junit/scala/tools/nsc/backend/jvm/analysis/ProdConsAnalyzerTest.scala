@@ -10,9 +10,9 @@ import org.junit.runners.JUnit4
 import scala.tools.asm.Opcodes
 import scala.tools.asm.tree.AbstractInsnNode
 import scala.tools.nsc.backend.jvm.AsmUtils._
-import scala.tools.partest.ASMConverters._
-import scala.tools.testing.BytecodeTesting
-import scala.tools.testing.BytecodeTesting._
+import scala.tools.testkit.ASMConverters._
+import scala.tools.testkit.BytecodeTesting
+import scala.tools.testkit.BytecodeTesting._
 
 @RunWith(classOf[JUnit4])
 class ProdConsAnalyzerTest extends BytecodeTesting {
@@ -223,7 +223,7 @@ class ProdConsAnalyzerTest extends BytecodeTesting {
 
   @Test
   def copyingInsns(): Unit = {
-    val m = compileAsmMethod("def f = 0l.asInstanceOf[Int]")
+    val m = compileAsmMethod("def f = 0L.asInstanceOf[Int]")
     val a = new ProdConsAnalyzer(m, "C")
 
     val cnst = findInstr(m, "LCONST_0")

@@ -6,7 +6,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
-import scala.tools.testing.AssertUtil._
+import scala.tools.testkit.AssertUtil._
 
 import Seq.empty
 
@@ -527,5 +527,88 @@ class IteratorTest {
     assertFalse(executed)
     it.toList
     assertTrue(executed)
+  }
+
+  @Test def `flatMap is memory efficient in previous element`(): Unit = {
+    import java.lang.ref._
+    // Array.iterator holds onto array reference; by contrast, iterating over List walks tail.
+    // Avoid reaching seq1 through test class. Avoid testing Array.iterator.
+    class C extends Iterable[String] {
+      val ss = Array("first", "second")
+
+      def iterator = new Iterator[String] {
+        var i = 0
+
+        def hasNext = i < ss.length
+
+        def next() =
+          if (hasNext) {
+            val res = ss(i); i += 1; res
+          }
+          else Iterator.empty.next()
+      }
+
+      def apply(i: Int) = ss(i)
+    }
+    val seq1 = new WeakReference(new C)
+    val seq2 = List("third")
+    val it0: Iterator[Int] = Iterator(1, 2)
+    lazy val it: Iterator[String] = it0.flatMap {
+      case 1 => seq1.get
+      case _ => check(); seq2
+    }
+
+    def check() = assertNotReachable(seq1.get, it)(())
+
+    def checkHasElement() = assertNotReachable(seq1.get.apply(1), it)(())
+
+    assert(it.hasNext)
+    assertEquals("first", it.next())
+
+    // verify that we're in the middle of seq1
+    assertThrows[AssertionError](checkHasElement())
+    assertThrows[AssertionError](check())
+    assert(it.hasNext)
+    assertEquals("second", it.next())
+
+    assert(it.hasNext)
+    assertNotReachable(seq1.get, it) {
+      assertEquals("third", it.next())
+    }
+    assert(!it.hasNext)
+  }
+
+  @Test def tapEach(): Unit = {
+    locally {
+      var i = 0
+      val tapped = Iterator(-1, -1, -1).tapEach(_ => i += 1)
+      assertEquals(true, tapped.hasNext)
+      assertEquals(0, i)
+    }
+
+    locally {
+      var i = 0
+      val tapped = Iterator(-1, -1, -1).tapEach(_ => i += 1)
+      assertEquals(-3, tapped.sum)
+      assertEquals(3, i)
+    }
+
+    locally {
+      var i = 0
+      val tapped = Iterator(-1, -1, -1).tapEach(_ => i += 1)
+      assertEquals(-1, tapped.next())
+      assertEquals(1, i)
+    }
+  }
+
+  @Test
+  def t11106(): Unit = {
+    var i = 0
+    Iterator.continually(0)
+      .map(_ => {i += 1; i})
+      .withFilter(_ < 10)
+      .take(3)
+      .foreach(_ => ())
+    assertEquals(3, i)
   }
 }

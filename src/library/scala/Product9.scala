@@ -20,13 +20,12 @@ object Product9 {
 }
 
 /** Product9 is a Cartesian product of 9 components.
- *  @since 2.3
  */
 trait Product9[+T1, +T2, +T3, +T4, +T5, +T6, +T7, +T8, +T9] extends Any with Product {
   /** The arity of this product.
    *  @return 9
    */
-  override def productArity = 9
+  override def productArity: Int = 9
 
   
   /** Returns the n-th projection of this product if 0 <= n < productArity,
@@ -34,11 +33,11 @@ trait Product9[+T1, +T2, +T3, +T4, +T5, +T6, +T7, +T8, +T9] extends Any with Pro
    *
    *  @param n number of the projection to be returned
    *  @return  same as `._(n+1)`, for example `productElement(0)` is the same as `._1`.
-   *  @throws  IndexOutOfBoundsException
+   *  @throws  IndexOutOfBoundsException if the `n` is out of range(n < 0 || n >= 9).
    */
 
   @throws(classOf[IndexOutOfBoundsException])
-  override def productElement(n: Int) = n match { 
+  override def productElement(n: Int): Any = n match { 
     case 0 => _1
     case 1 => _2
     case 2 => _3
@@ -48,7 +47,7 @@ trait Product9[+T1, +T2, +T3, +T4, +T5, +T6, +T7, +T8, +T9] extends Any with Pro
     case 6 => _7
     case 7 => _8
     case 8 => _9
-    case _ => throw new IndexOutOfBoundsException(n.toString())
+    case _ => throw new IndexOutOfBoundsException(s"$n is out of bounds (min 0, max 8)")
  }
 
   /** A projection of element 1 of this Product.

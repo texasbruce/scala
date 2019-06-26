@@ -76,8 +76,6 @@ object Factory {
   * @tparam CC Collection type constructor (e.g. `List`)
   * @define factoryInfo
   *   This object provides a set of operations to create $Coll values.
-  *   @author Martin Odersky
-  *   @since 2.13
   *
   * @define coll collection
   * @define Coll `Iterable`
@@ -285,6 +283,7 @@ object IterableFactory {
 
   @SerialVersionUID(3L)
   class Delegate[CC[_]](delegate: IterableFactory[CC]) extends IterableFactory[CC] {
+    override def apply[A](elems: A*): CC[A] = delegate.apply(elems: _*)
     def empty[A]: CC[A] = delegate.empty
     def from[E](it: IterableOnce[E]): CC[E] = delegate.from(it)
     def newBuilder[A]: Builder[A, CC[A]] = delegate.newBuilder[A]
@@ -302,6 +301,7 @@ trait SeqFactory[+CC[A] <: SeqOps[A, Seq, Seq[A]]] extends IterableFactory[CC] {
 object SeqFactory {
   @SerialVersionUID(3L)
   class Delegate[CC[A] <: SeqOps[A, Seq, Seq[A]]](delegate: SeqFactory[CC]) extends SeqFactory[CC] {
+    override def apply[A](elems: A*): CC[A] = delegate.apply(elems: _*)
     def empty[A]: CC[A] = delegate.empty
     def from[E](it: IterableOnce[E]): CC[E] = delegate.from(it)
     def newBuilder[A]: Builder[A, CC[A]] = delegate.newBuilder[A]
@@ -358,8 +358,6 @@ trait StrictOptimizedSeqFactory[+CC[A] <: SeqOps[A, Seq, Seq[A]]] extends SeqFac
   * @tparam C Type of collection (e.g. `List[Int]`, `TreeMap[Int, String]`, etc.)
   * @define factoryInfo
   *   This object provides a set of operations to create $Coll values.
-  *   @author Martin Odersky
-  *   @since  2.13
   *
   * @define coll collection
   * @define Coll `Iterable`
@@ -376,8 +374,6 @@ trait SpecificIterableFactory[-A, +C] extends Factory[A, C] {
 /**
   * @define factoryInfo
   *   This object provides a set of operations to create $Coll values.
-  *   @author Martin Odersky
-  *   @since 2.13
   *
   * @define coll collection
   * @define Coll `Iterable`
@@ -422,6 +418,7 @@ object MapFactory {
 
   @SerialVersionUID(3L)
   class Delegate[C[_, _]](delegate: MapFactory[C]) extends MapFactory[C] {
+    override def apply[K, V](elems: (K, V)*): C[K, V] = delegate.apply(elems: _*)
     def from[K, V](it: IterableOnce[(K, V)]): C[K, V] = delegate.from(it)
     def empty[K, V]: C[K, V] = delegate.empty
     def newBuilder[K, V]: Builder[(K, V), C[K, V]] = delegate.newBuilder
@@ -514,6 +511,7 @@ object EvidenceIterableFactory {
 
   @SerialVersionUID(3L)
   class Delegate[CC[_], Ev[_]](delegate: EvidenceIterableFactory[CC, Ev]) extends EvidenceIterableFactory[CC, Ev] {
+    override def apply[A: Ev](xs: A*): CC[A] = delegate.apply(xs: _*)
     def empty[A : Ev]: CC[A] = delegate.empty
     def from[E : Ev](it: IterableOnce[E]): CC[E] = delegate.from(it)
     def newBuilder[A : Ev]: Builder[A, CC[A]] = delegate.newBuilder[A]
@@ -713,8 +711,6 @@ trait StrictOptimizedClassTagSeqFactory[+CC[A] <: SeqOps[A, Seq, Seq[A]]] extend
 /**
   * @define factoryInfo
   *   This object provides a set of operations to create $Coll values.
-  *   @author Martin Odersky
-  *   @since 2.13
   *
   * @define coll collection
   * @define Coll `Iterable`
@@ -762,6 +758,7 @@ object SortedMapFactory {
 
   @SerialVersionUID(3L)
   class Delegate[CC[_, _]](delegate: SortedMapFactory[CC]) extends SortedMapFactory[CC] {
+    override def apply[K: Ordering, V](elems: (K, V)*): CC[K, V] = delegate.apply(elems: _*)
     def from[K : Ordering, V](it: IterableOnce[(K, V)]): CC[K, V] = delegate.from(it)
     def empty[K : Ordering, V]: CC[K, V] = delegate.empty
     def newBuilder[K : Ordering, V]: Builder[(K, V), CC[K, V]] = delegate.newBuilder

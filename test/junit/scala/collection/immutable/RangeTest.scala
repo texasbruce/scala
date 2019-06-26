@@ -3,7 +3,7 @@ package scala.collection.immutable
 import org.junit.{Assert, Test}
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
-import scala.tools.testing.AssertUtil
+import scala.tools.testkit.AssertUtil
 
 @RunWith(classOf[JUnit4])
 class RangeTest {
@@ -74,4 +74,39 @@ class RangeTest {
   def largeRangeMap(): Unit = {
     Int.MinValue to Int.MaxValue map identity
   }
+
+  @Test
+  def rangeMinMax(): Unit = {
+    assertEquals(1, (1 to 20).min)
+    assertEquals(20, (1 to 20).max)
+
+    assertEquals(1, (20 to 1 by -1).min)
+    assertEquals(20, (20 to 1 by -1).max)
+
+    assertEquals(20, (1 to 20).min(Ordering.Int.reverse))
+    assertEquals(1, (1 to 20).max(Ordering.Int.reverse))
+
+    assertEquals(20, (20 to 1 by -1).min(Ordering.Int.reverse))
+    assertEquals(1, (20 to 1 by -1).max(Ordering.Int.reverse))
+  }
+
+  @Test
+  def testRangeEndsWith(): Unit = {
+    assertFalse((0 until 0).endsWith(List(-4, -3, -2, -1)))
+    assertTrue((-8 until -1).endsWith((-8 until -1).takeRight(1)))
+    assertTrue((0 until 0).endsWith(0 until 0))
+  }
+
+  @Test
+  def testRangeDrop(): Unit = {
+    assertTrue((0 until 0).iterator.drop(-4).toList.isEmpty)
+    assertEquals(4, (1 to 4).iterator.drop(-4).toList.size)
+  }
+
+  @Test
+  def `startsWith should not throw an exception when out of range`(): Unit = {
+    assertTrue((1 to 5).startsWith(Nil, 7))
+    assertFalse((1 to 5).startsWith(1 to 1, 8))
+  }
+
 }

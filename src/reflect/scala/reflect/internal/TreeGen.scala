@@ -769,7 +769,8 @@ abstract class TreeGen {
       //                  ...
       //                  val/var x_N = t$._N
 
-      val rhsUnchecked = mkUnchecked(rhs)
+      val linting = isVarDefWarnable
+      val rhsUnchecked = if (linting) rhs else mkUnchecked(rhs)
 
       // TODO: clean this up -- there is too much information packed into mkPatDef's `pat` argument
       // when it's a simple identifier (case Some((name, tpt)) -- above),
@@ -844,19 +845,19 @@ abstract class TreeGen {
       atPos(rhs.pos)(Apply(Select(rhs, nme.withFilter), visitor :: Nil))
     }
 
-  /** If tree is a variable pattern, return Some("its name and type").
-   *  Otherwise return none */
+  /** If tree is a variable pattern, return Some("its name and type"), otherwise None.
+   *  A varpat is x, x @ _, x @ (_: T), x: T.
+   *  For normal identifiers, backticks don't matter, but as a special case,
+   *  backticked underscore is a variable and not a wildcard.
+   */
   private def matchVarPattern(tree: Tree): Option[(Name, Tree)] = {
-    def wildType(t: Tree): Option[Tree] = t match {
-      case Ident(x) if x.toTermName == nme.WILDCARD             => Some(TypeTree())
-      case Typed(Ident(x), tpt) if x.toTermName == nme.WILDCARD => Some(tpt)
-      case _                                                    => None
-    }
+    import nme.{WILDCARD => WC}
     tree match {
-      case Ident(name)             => Some((name, TypeTree()))
-      case Bind(name, body)        => wildType(body) map (x => (name, x))
-      case Typed(Ident(name), tpt) => Some((name, tpt))
-      case _                       => None
+      case id @ Ident(name) if name.toTermName != WC || id.isBackquoted => Some((name, TypeTree()))
+      case Bind(name, Ident(x)) if x.toTermName == WC                   => Some((name, TypeTree()))
+      case Bind(name, Typed(Ident(x), tpt)) if x.toTermName == WC       => Some((name, tpt))
+      case Typed(id @ Ident(name), tpt) if name.toTermName != WC || id.isBackquoted => Some((name, tpt))
+      case _ => None
     }
   }
 
@@ -955,6 +956,9 @@ abstract class TreeGen {
 
   /** Can be overridden to depend on settings.warnUnusedPatvars. */
   def isPatVarWarnable: Boolean = true
+
+  /** Can be overridden to depend on settings.lintValPatterns. */
+  def isVarDefWarnable: Boolean = false
 
   /** Not in for comprehensions, whether to warn unused pat vars depends on flag. */
   object patvarTransformer       extends PatvarTransformer(forFor = false)

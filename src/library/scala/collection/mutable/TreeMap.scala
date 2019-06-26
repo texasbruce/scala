@@ -14,7 +14,10 @@ package scala
 package collection
 package mutable
 
-import collection.mutable.{RedBlackTree => RB}
+import scala.annotation.unchecked.uncheckedVariance
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.generic.DefaultSerializable
+import scala.collection.mutable.{RedBlackTree => RB}
 
 /**
   * A mutable sorted map implemented using a mutable red-black tree as underlying data structure.
@@ -22,9 +25,6 @@ import collection.mutable.{RedBlackTree => RB}
   * @param ordering the implicit ordering used to compare objects of type `A`.
   * @tparam K the type of the keys contained in this tree map.
   * @tparam V the type of the values associated with the keys.
-  *
-  * @author Rui Gonçalves
-  * @since 2.12
   *
   * @define Coll mutable.TreeMap
   * @define coll mutable tree map
@@ -35,7 +35,9 @@ sealed class TreeMap[K, V] private (tree: RB.Tree[K, V])(implicit val ordering: 
     with SortedMapOps[K, V, TreeMap, TreeMap[K, V]]
     with StrictOptimizedIterableOps[(K, V), Iterable, TreeMap[K, V]]
     with StrictOptimizedMapOps[K, V, Map, TreeMap[K, V]]
-    with StrictOptimizedSortedMapOps[K, V, TreeMap, TreeMap[K, V]] {
+    with StrictOptimizedSortedMapOps[K, V, TreeMap, TreeMap[K, V]]
+    with SortedMapFactoryDefaults[K, V, TreeMap, Iterable, Map]
+    with DefaultSerializable {
 
   override def sortedMapFactory = TreeMap
 
@@ -76,6 +78,37 @@ sealed class TreeMap[K, V] private (tree: RB.Tree[K, V])(implicit val ordering: 
     else RB.valuesIterator(tree, Some(start))
   }
 
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[(K, V), S]): S with EfficientSplit =
+    shape.parUnbox(
+      scala.collection.convert.impl.AnyBinaryTreeStepper.from[(K, V), RB.Node[K, V]](
+        size, tree.root, _.left, _.right, x => (x.key, x.value)
+      )
+    )
+
+  override def keyStepper[S <: Stepper[_]](implicit shape: StepperShape[K, S]): S with EfficientSplit = {
+    import scala.collection.convert.impl._
+    type T = RB.Node[K, V]
+    val s = shape.shape match {
+      case StepperShape.IntShape    => IntBinaryTreeStepper.from[T]   (size, tree.root, _.left, _.right, _.key.asInstanceOf[Int])
+      case StepperShape.LongShape   => LongBinaryTreeStepper.from[T]  (size, tree.root, _.left, _.right, _.key.asInstanceOf[Long])
+      case StepperShape.DoubleShape => DoubleBinaryTreeStepper.from[T](size, tree.root, _.left, _.right, _.key.asInstanceOf[Double])
+      case _         => shape.parUnbox(AnyBinaryTreeStepper.from[K, T](size, tree.root, _.left, _.right, _.key))
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
+
+  override def valueStepper[S <: Stepper[_]](implicit shape: StepperShape[V, S]): S with EfficientSplit = {
+    import scala.collection.convert.impl._
+    type T = RB.Node[K, V]
+    val s = shape.shape match {
+      case StepperShape.IntShape    => IntBinaryTreeStepper.from[T]    (size, tree.root, _.left, _.right, _.value.asInstanceOf[Int])
+      case StepperShape.LongShape   => LongBinaryTreeStepper.from[T]   (size, tree.root, _.left, _.right, _.value.asInstanceOf[Long])
+      case StepperShape.DoubleShape => DoubleBinaryTreeStepper.from[T] (size, tree.root, _.left, _.right, _.value.asInstanceOf[Double])
+      case _         => shape.parUnbox(AnyBinaryTreeStepper.from[V, T] (size, tree.root, _.left, _.right, _.value))
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
+
   def addOne(elem: (K, V)): this.type = { RB.insert(tree, elem._1, elem._2); this }
 
   def subtractOne(elem: K): this.type = { RB.delete(tree, elem); this }
@@ -101,6 +134,7 @@ sealed class TreeMap[K, V] private (tree: RB.Tree[K, V])(implicit val ordering: 
   def rangeImpl(from: Option[K], until: Option[K]): TreeMap[K, V] = new TreeMapProjection(from, until)
 
   override def foreach[U](f: ((K, V)) => U): Unit = RB.foreach(tree, f)
+  override def foreachEntry[U](f: (K, V) => U): Unit = RB.foreachEntry(tree, f)
 
   override def size: Int = RB.size(tree)
   override def knownSize: Int = size

@@ -16,12 +16,12 @@ package transform
 
 import symtab._
 import Flags.{CASE => _, _}
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 
 /** This class ...
  *
  *  @author  Martin Odersky
- *  @version 1.0
  */
 abstract class ExplicitOuter extends InfoTransform
       with TypingTransformers
@@ -264,11 +264,12 @@ abstract class ExplicitOuter extends InfoTransform
     }
 
     /** The path
-     *  <blockquote><pre>`base'.$outer$$C1 ... .$outer$$Cn</pre></blockquote>
+     *  <blockquote><pre>`base`.$outer$$C1 ... .$outer$$Cn</pre></blockquote>
      *  which refers to the outer instance of class to of
      *  value base. The result is typed but not positioned.
      */
-    protected def outerPath(base: Tree, from: Symbol, to: Symbol): Tree = {
+    @tailrec
+    protected final def outerPath(base: Tree, from: Symbol, to: Symbol): Tree = {
       //Console.println("outerPath from "+from+" to "+to+" at "+base+":"+base.tpe)
       if (from == to) base
       else {

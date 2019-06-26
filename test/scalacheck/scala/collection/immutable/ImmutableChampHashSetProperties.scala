@@ -1,15 +1,15 @@
 package scala.collection.immutable
 
 import org.scalacheck.Arbitrary._
-import org.scalacheck.Prop.forAll
+import org.scalacheck.Prop._
 import org.scalacheck._
 
-object ImmutableChampHashSetProperties extends Properties("immutable.ChampHashSet") {
+object ImmutableChampHashSetProperties extends Properties("immutable.HashSet") {
 
   type K = Int
 
-//  override def overrideParameters(p: org.scalacheck.Test.Parameters) =
-//    p.withMinSuccessfulTests(1000)
+  override def overrideParameters(p: org.scalacheck.Test.Parameters) =
+    p.withMinSuccessfulTests(100).withInitialSeed(42L)
 
   private def doSubtract(one: HashSet[K], two: HashSet[K]) = {
     one.foldLeft(HashSet.empty[K])((result, elem) => if (two contains elem) result else result + elem)
@@ -51,7 +51,7 @@ object ImmutableChampHashSetProperties extends Properties("immutable.ChampHashSe
   }
 
   property("containsAfterInsert") = forAll { (inputValues: HashSet[K]) =>
-    var testSet = HashSet.empty[K] ++ inputValues
+    val testSet = HashSet.empty[K] ++ inputValues
     inputValues.forall(testSet.contains)
   }
 
@@ -101,7 +101,7 @@ object ImmutableChampHashSetProperties extends Properties("immutable.ChampHashSe
     val intersectNative = oneWithShared.intersect(twoWithShared)
     val intersectDefault = doIntersect(oneWithShared, twoWithShared)
 
-    intersectDefault == intersectNative
+    intersectDefault =? intersectNative
   }
 
   property("intersectIdentityMostlyReference") = forAll { (input: HashSet[K], key: K) =>
@@ -245,11 +245,11 @@ object ImmutableChampHashSetProperties extends Properties("immutable.ChampHashSe
     val b = HashSet.newBuilder[K].addAll(seq)
     b.result == b.addAll(seq).result()
   }
-  property("(xs ++ ys).toMap == xs.toMap ++ ys.toMap") = forAll { (xs: Seq[K],ys: Seq[K]) =>
-    (xs ++ ys).toSet == xs.toSet ++ ys.toSet
+  property("(xs ++ ys).toSet == xs.toSet ++ ys.toSet") = forAll { (xs: Seq[K],ys: Seq[K]) =>
+    (xs ++ ys).toSet =? xs.toSet ++ ys.toSet
   }
-  property("HashMapBuilder produces the same Map as MapBuilder") = forAll { (xs: Seq[K]) =>
-    HashSet.newBuilder[K].addAll(xs).result() == HashSet.newBuilder[K].addAll(xs).result()
+  property("HashSetBuilder produces the same Set as SetBuilder") = forAll { (xs: Seq[K]) =>
+    HashSet.newBuilder[K].addAll(xs).result() =? HashSet.newBuilder[K].addAll(xs).result()
   }
   property("HashSetBuilder does not mutate after releasing") = forAll { (xs: Seq[K], ys: Seq[K], single: K, addSingleFirst: Boolean) =>
     val b = HashSet.newBuilder[K].addAll(xs)
@@ -262,7 +262,7 @@ object ImmutableChampHashSetProperties extends Properties("immutable.ChampHashSe
       b.addAll(ys)
       b.addOne(single)
     }
-    (b.result().size >= hashSetA.size) && hashSetA == cloneOfA
+    Prop(b.result().size >= hashSetA.size) && ((hashSetA: Set[K]) ?= (cloneOfA: Set[K]))
   }
   property("Set does not mutate after releasing") = forAll { (xs: Seq[K], ys: Seq[K], single: K, addSingleFirst: Boolean) =>
     val b = Set.newBuilder[K].addAll(xs)
@@ -283,4 +283,101 @@ object ImmutableChampHashSetProperties extends Properties("immutable.ChampHashSe
     (mb.result() eq mb.result()) && (hmb.result() eq hmb.result())
   }
 
+  property("xs.toList.toSet == xs") = forAll { xs: Set[K] =>
+    xs.toList.toSet == xs
+  }
+
+  property("(xs - elem) == xs.toList.filterNot(_ == elem).toSet") = forAll { (xs: Set[K], elem: K) =>
+    (xs - elem) == xs.toList.filterNot(_ == elem).toSet
+  }
+
+  property("(xs + elem) == (xs.toList :+ elem).toSet") = forAll { (xs: Set[K], elem: K) =>
+    (xs + elem) == (xs.toList :+ elem).toSet
+  }
+  property("xs -- range == xs -- range.toSet") = forAll { (xs: Set[Int], rangeMax: Int) =>
+    val range = 1 to (rangeMax % 10000)
+    xs -- range == xs -- range.toSet
+  }
+
+  property("concat(mutable.HashSet)") = forAll { (left: HashSet[Int], right: HashSet[Int]) =>
+    val expected: collection.Set[Int] = left concat right
+    val actual: collection.Set[Int] = left.concat(right.to(collection.mutable.HashSet))
+    actual ?= expected
+  }
+  property("concat(Vector)") = forAll { (left: HashSet[Int], right: Vector[Int]) =>
+    val expected: collection.Set[Int] = left.iterableFactory.newBuilder[Int].addAll(left).addAll(right).result()
+    val actual: collection.Set[Int] = left.concat(right)
+    actual ?= expected
+  }
+  property("removedAll(HashSet)") = forAll { (left: HashSet[Int], right: HashSet[Int]) =>
+    val expected: collection.Set[Int] = left.filter(!right.contains(_))
+    val actual: collection.Set[Int] = left -- right
+    actual ?= expected
+  }
+  property("removedAll(mutable.HashSet)") = forAll { (left: HashSet[Int], right: HashSet[Int]) =>
+    val expected: collection.Set[Int] = left -- right
+    val actual: collection.Set[Int] = left -- right.to(collection.mutable.HashSet)
+    actual ?= expected
+  }
+
+  property("removedAll(Vector)") = forAll { (left: HashSet[Int], right: Vector[Int]) =>
+    val expected: collection.Set[Int] = left.filter(!right.contains(_))
+    val actual: collection.Set[Int] = left -- right
+    actual ?= expected
+  }
+  property("(xs.filter(p) == xs.toList.filter(p).toSet") = forAll { xs: HashSet[Int] =>
+    val isEven = (i: Int) => i % 2 == 0
+    xs.toList.filter(isEven).toSet =? xs.filter(isEven)
+  }
+  property("(xs.filterNot(p) == xs.toList.filterNot(p).toSet") = forAll { xs: HashSet[Int] =>
+    val isEven = (i: Int) => i % 2 == 0
+    xs.toList.filterNot(isEven).toSet =? xs.filterNot(isEven)
+  }
+
+  property("xs ++ list == list.foldLeft(xs)(_ + _)") = forAll { (xs: HashSet[Int], list: List[Int]) =>
+    xs.concat(list) ?= list.foldLeft(xs)(_ + _)
+  }
+
+
+  property("hs.concat(list) does not mutate hs") = forAll { (hs: HashSet[K], l: List[K]) =>
+    val asList = hs.toList
+    val clone = hs.to(List).to(HashSet)
+    hs.concat(l)
+    hs ?= clone
+  }
+  property("hs.concat(mutable.HashSet) does not mutate hs or the mutable.HashSet") = forAll { (hs: HashSet[K], l: List[K]) =>
+    val mhs: collection.Set[K] = l.to(collection.mutable.HashSet)
+    val clone = hs.to(List).to(HashSet)
+    hs.concat(mhs)
+    hs ?= clone
+  }
+  property("hs.concat(mutable.HashSet)") = forAll { (hs: HashSet[K], l: List[K]) =>
+    val mhs: collection.Set[K] = l.to(collection.mutable.HashSet)
+    hs.concat(mhs) ?= mhs.foldLeft(hs)(_ + _)
+  }
+
+  property("hs.union(hashSet) does not mutate hs") = forAll { (hs: HashSet[K], hs2: HashSet[K]) =>
+    val clone = hs.to(List).to(HashSet)
+    hs.union(hs2)
+    hs ?= clone
+  }
+  property("hs.removedAll(list) does not mutate hs") = forAll { (hs: HashSet[K], l: List[K]) =>
+    val clone = hs.to(List).to(HashSet)
+    hs.removedAll(l)
+    hs ?= clone
+  }
+  property("hs.diff(hashSet) does not mutate hs") = forAll { (hs: HashSet[K], hs2: HashSet[K]) =>
+    val clone = hs.to(List).to(HashSet)
+    hs.diff(hs2)
+    hs ?= clone
+  }
+  property("hs.removedAll(hashSet) does not mutate hs") = forAll { (hs: HashSet[K], hs2: HashSet[K]) =>
+    val clone = hs.to(List).to(HashSet)
+    hs.removedAll(hs2)
+    hs ?= clone
+  }
+  property("t11551") = forAll { (x: HashSet[AnyVal], y: HashSet[AnyVal]) =>
+    val z = x ++ y
+    z.size ?= z.toList.toSet.size
+  }
 }

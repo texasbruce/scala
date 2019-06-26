@@ -16,6 +16,7 @@ package mutable
 import java.io.{ObjectInputStream, ObjectOutputStream}
 
 import scala.annotation.tailrec
+import scala.collection.generic.DefaultSerializable
 import scala.reflect.ClassTag
 import scala.collection.immutable.Nil
 
@@ -43,16 +44,18 @@ import scala.collection.immutable.Nil
   *
   *  @define coll unrolled buffer
   *  @define Coll `UnrolledBuffer`
-  *  @author Aleksandar Prokopec
   *
   */
+@SerialVersionUID(3L)
 sealed class UnrolledBuffer[T](implicit val tag: ClassTag[T])
   extends AbstractBuffer[T]
     with Buffer[T]
     with Seq[T]
     with SeqOps[T, UnrolledBuffer, UnrolledBuffer[T]]
     with StrictOptimizedSeqOps[T, UnrolledBuffer, UnrolledBuffer[T]]
-    with Builder[T, UnrolledBuffer[T]] {
+    with EvidenceIterableFactoryDefaults[T, UnrolledBuffer, ClassTag]
+    with Builder[T, UnrolledBuffer[T]]
+    with DefaultSerializable {
 
   import UnrolledBuffer.Unrolled
 
@@ -66,8 +69,8 @@ sealed class UnrolledBuffer[T](implicit val tag: ClassTag[T])
   private[collection] def lastPtr_=(last: Unrolled[T]) = lastptr = last
   private[collection] def size_=(s: Int) = sz = s
 
-  override protected def fromSpecific(coll: scala.collection.IterableOnce[T]) = UnrolledBuffer.from(coll)
-  override protected def newSpecificBuilder: Builder[T, UnrolledBuffer[T]] = new UnrolledBuffer[T]
+  protected def evidenceIterableFactory: UnrolledBuffer.type = UnrolledBuffer
+  protected def iterableEvidence: ClassTag[T] = tag
 
   override def iterableFactory: SeqFactory[UnrolledBuffer] = UnrolledBuffer.untagged
 
@@ -153,13 +156,15 @@ sealed class UnrolledBuffer[T](implicit val tag: ClassTag[T])
 
   def length = sz
 
+  override def knownSize: Int = sz
+
   def apply(idx: Int) =
     if (idx >= 0 && idx < sz) headptr(idx)
-    else throw new IndexOutOfBoundsException(idx.toString)
+    else throw new IndexOutOfBoundsException(s"$idx is out of bounds (min 0, max ${sz-1})")
 
   def update(idx: Int, newelem: T) =
     if (idx >= 0 && idx < sz) headptr(idx) = newelem
-    else throw new IndexOutOfBoundsException(idx.toString)
+    else throw new IndexOutOfBoundsException(s"$idx is out of bounds (min 0, max ${sz-1})")
 
   def mapInPlace(f: T => T): this.type = {
     headptr.mapInPlace(f)
@@ -170,7 +175,7 @@ sealed class UnrolledBuffer[T](implicit val tag: ClassTag[T])
     if (idx >= 0 && idx < sz) {
       sz -= 1
       headptr.remove(idx, this)
-    } else throw new IndexOutOfBoundsException(idx.toString)
+    } else throw new IndexOutOfBoundsException(s"$idx is out of bounds (min 0, max ${sz-1})")
 
   @tailrec final def remove(idx: Int, count: Int): Unit =
     if (count > 0) {
@@ -190,10 +195,12 @@ sealed class UnrolledBuffer[T](implicit val tag: ClassTag[T])
   def insertAll(idx: Int, elems: IterableOnce[T]): Unit =
     if (idx >= 0 && idx <= sz) {
       sz += headptr.insertAll(idx, elems, this)
-    } else throw new IndexOutOfBoundsException(idx.toString)
+    } else throw new IndexOutOfBoundsException(s"$idx is out of bounds (min 0, max ${sz-1})")
 
   override def subtractOne(elem: T): this.type = {
-    headptr.subtractOne(elem, this)
+    if (headptr.subtractOne(elem, this)) {
+      sz -= 1
+    }
     this
   }
 
@@ -241,8 +248,13 @@ object UnrolledBuffer extends StrictOptimizedClassTagSeqFactory[UnrolledBuffer] 
 
   def newBuilder[A : ClassTag]: UnrolledBuffer[A] = new UnrolledBuffer[A]
 
-  val waterline = 50
-  val waterlineDelim = 100    // TODO -- fix this name!  It's a denominator, not a delimiter.  (But it's part of the API so we can't just change it.)
+  final val waterline: Int = 50
+
+  final def waterlineDenom: Int = 100
+
+  @deprecated("Use waterlineDenom instead.", "2.13.0")
+  final val waterlineDelim: Int = waterlineDenom
+
   private[collection] val unrolledlength = 32
 
   /** Unrolled buffer node.
@@ -333,16 +345,16 @@ object UnrolledBuffer extends StrictOptimizedClassTagSeqFactory[UnrolledBuffer] 
         r
       } else next.remove(idx - size, buffer)
 
-    @tailrec final def subtractOne(elem: T, buffer: UnrolledBuffer[T]): Unit = {
+    @tailrec final def subtractOne(elem: T, buffer: UnrolledBuffer[T]): Boolean = {
       var i = 0
       while (i < size) {
         if(array(i) == elem) {
           remove(i, buffer)
-          return ()
+          return true
         }
         i += 1
       }
-      if(next ne null) next.subtractOne(elem, buffer)
+      if(next ne null) next.subtractOne(elem, buffer) else false
     }
 
     // shifts left elements after `leftb` (overwrites `leftb`)
@@ -354,7 +366,7 @@ object UnrolledBuffer extends StrictOptimizedClassTagSeqFactory[UnrolledBuffer] 
       }
       nullout(i, i + 1)
     }
-    protected def tryMergeWithNext() = if (next != null && (size + next.size) < (array.length * waterline / waterlineDelim)) {
+    protected def tryMergeWithNext() = if (next != null && (size + next.size) < (array.length * waterline / waterlineDenom)) {
       // copy the next array, then discard the next node
       Array.copy(next.array, 0, array, size, next.size)
       size = size + next.size
@@ -422,4 +434,11 @@ object UnrolledBuffer extends StrictOptimizedClassTagSeqFactory[UnrolledBuffer] 
     override def toString: String =
       array.take(size).mkString("Unrolled@%08x".format(System.identityHashCode(this)) + "[" + size + "/" + array.length + "](", ", ", ")") + " -> " + (if (next ne null) next.toString else "")
   }
+}
+
+// This is used by scala.collection.parallel.mutable.UnrolledParArrayCombiner:
+// Todo -- revisit whether inheritance is the best way to achieve this functionality
+private[collection] class DoublingUnrolledBuffer[T](implicit t: ClassTag[T]) extends UnrolledBuffer[T]()(t) {
+  override def calcNextLength(sz: Int) = if (sz < 10000) sz * 2 else sz
+  protected override def newUnrolled = new UnrolledBuffer.Unrolled[T](0, new Array[T](4), null, this)
 }

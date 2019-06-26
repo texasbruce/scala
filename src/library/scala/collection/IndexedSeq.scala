@@ -14,13 +14,18 @@ package scala
 package collection
 
 import scala.annotation.tailrec
+import scala.collection.Searching.{Found, InsertionPoint, SearchResult}
+import scala.collection.Stepper.EfficientSplit
 import scala.language.higherKinds
 import scala.math.Ordering
-import Searching.{SearchResult, Found, InsertionPoint}
 
 /** Base trait for indexed sequences that have efficient `apply` and `length` */
-trait IndexedSeq[+A] extends Seq[A] with IndexedSeqOps[A, IndexedSeq, IndexedSeq[A]] {
+trait IndexedSeq[+A] extends Seq[A]
+  with IndexedSeqOps[A, IndexedSeq, IndexedSeq[A]]
+  with IterableFactoryDefaults[A, IndexedSeq] {
   override protected[this] def stringPrefix: String = "IndexedSeq"
+
+  override def iterableFactory: SeqFactory[IndexedSeq] = IndexedSeq
 }
 
 @SerialVersionUID(3L)
@@ -30,6 +35,17 @@ object IndexedSeq extends SeqFactory.Delegate[IndexedSeq](immutable.IndexedSeq)
 trait IndexedSeqOps[+A, +CC[_], +C] extends Any with SeqOps[A, CC, C] { self =>
 
   def iterator: Iterator[A] = view.iterator
+
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[A, S]): S with EfficientSplit = {
+    import convert.impl._
+    val s = shape.shape match {
+      case StepperShape.IntShape    => new IntIndexedSeqStepper   (this.asInstanceOf[IndexedSeqOps[Int, AnyConstr, _]],    0, length)
+      case StepperShape.LongShape   => new LongIndexedSeqStepper  (this.asInstanceOf[IndexedSeqOps[Long, AnyConstr, _]],   0, length)
+      case StepperShape.DoubleShape => new DoubleIndexedSeqStepper(this.asInstanceOf[IndexedSeqOps[Double, AnyConstr, _]], 0, length)
+      case _                        => shape.parUnbox(new AnyIndexedSeqStepper[A](this, 0, length))
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
 
   override def reverseIterator: Iterator[A] = new AbstractIterator[A] {
     private[this] var i = self.length
@@ -42,6 +58,9 @@ trait IndexedSeqOps[+A, +CC[_], +C] extends Any with SeqOps[A, CC, C] { self =>
   }
 
   override def view: IndexedSeqView[A] = new IndexedSeqView.Id[A](this)
+
+  @deprecated("Use .view.slice(from, until) instead of .view(from, until)", "2.13.0")
+  override def view(from: Int, until: Int): IndexedSeqView[A] = view.slice(from, until)
 
   override protected def reversed: Iterable[A] = new IndexedSeqView.Reverse(this)
 
@@ -66,9 +85,9 @@ trait IndexedSeqOps[+A, +CC[_], +C] extends Any with SeqOps[A, CC, C] { self =>
 
   override final def lengthCompare(len: Int): Int = Integer.compare(length, len)
 
-  final override def knownSize: Int = length
+  override def knownSize: Int = length
 
-  override final def sizeCompare(that: Iterable[_]): Int = {
+  override final def lengthCompare(that: Iterable[_]): Int = {
     val res = that.sizeCompare(length)
     // can't just invert the result, because `-Int.MinValue == Int.MinValue`
     if (res == Int.MinValue) 1 else -res

@@ -12,9 +12,7 @@
 
 package scala.tools.nsc.transform.patmat
 
-import scala.language.postfixOps
 import scala.reflect.internal.util.StatisticsStatics
-
 
 /** Translate typed Trees that represent pattern matches into the patternmatching IR, defined by TreeMakers.
  */
@@ -29,8 +27,6 @@ trait MatchTranslation {
   // Always map repeated params to sequences
   private def setVarInfo(sym: Symbol, info: Type) =
     sym setInfo debug.patmatResult(s"changing ${sym.defString} to")(repeatedToSeq(info))
-
-  private def hasSym(t: Tree) = t.symbol != null && t.symbol != NoSymbol
 
   trait MatchTranslator extends TreeMakers with TreeMakerWarnings {
     import typer.context
@@ -62,8 +58,8 @@ trait MatchTranslation {
 
     object SymbolBound {
       def unapply(tree: Tree): Option[(Symbol, Tree)] = tree match {
-        case Bind(_, expr) if hasSym(tree) => Some(tree.symbol -> expr)
-        case _                             => None
+        case Bind(_, expr) if tree.hasExistingSymbol => Some(tree.symbol -> expr)
+        case _                                       => None
       }
     }
 
@@ -408,7 +404,7 @@ trait MatchTranslation {
       }
 
       // never store these in local variables (for PreserveSubPatBinders)
-      lazy val ignoredSubPatBinders: Set[Symbol] = subPatBinders zip args collect { case (b, PatternBoundToUnderscore()) => b } toSet
+      lazy val ignoredSubPatBinders: Set[Symbol] = (subPatBinders zip args).collect { case (b, PatternBoundToUnderscore()) => b }.toSet
 
       // there are `productArity` non-seq elements in the tuple.
       protected def firstIndexingBinder = productArity
@@ -457,14 +453,15 @@ trait MatchTranslation {
       protected def lengthGuard(binder: Symbol): Option[Tree] =
         // no need to check unless it's an unapplySeq and the minimal length is non-trivially satisfied
         checkedLength map { expectedLength =>
-          def lengthCompareSym = binder.info member nme.lengthCompare
-
           // `binder.lengthCompare(expectedLength)`
           // ...if binder has a lengthCompare method, otherwise
           // `scala.math.signum(binder.length - expectedLength)`
-          def checkExpectedLength = lengthCompareSym match {
-            case NoSymbol => compareInts(Select(seqTree(binder, forceImmutable = false), nme.length), LIT(expectedLength))
-            case lencmp   => (seqTree(binder, forceImmutable = false) DOT lencmp)(LIT(expectedLength))
+          def checkExpectedLength = {
+            val tree = seqTree(binder, forceImmutable = false)
+            val typedTree = typer.typed(tree)
+            val lengthCompareSym = typedTree.tpe.member(nme.lengthCompare)
+            if (lengthCompareSym == NoSymbol) compareInts(Select(typedTree, nme.length), LIT(expectedLength))
+            else (typedTree DOT lengthCompareSym)(LIT(expectedLength))
           }
 
           // the comparison to perform

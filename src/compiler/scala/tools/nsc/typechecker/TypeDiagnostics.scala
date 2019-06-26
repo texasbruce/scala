@@ -37,7 +37,6 @@ import scala.annotation.tailrec
  *  And more, and there is plenty of overlap, so it'll be a process.
  *
  *  @author Paul Phillips
- *  @version 1.0
  */
 trait TypeDiagnostics {
   self: Analyzer with StdAttachments =>
@@ -224,8 +223,8 @@ trait TypeDiagnostics {
         val params    = req.typeConstructor.typeParams
 
         if (foundArgs.nonEmpty && foundArgs.length == reqArgs.length) {
-          val relationships = foundArgs.lazyZip(reqArgs).lazyZip(params).map {
-            case (arg, reqArg, param) =>
+          val relationships = map3(foundArgs, reqArgs, params){
+            (arg, reqArg, param) =>
               def mkMsg(isSubtype: Boolean) = {
                 val op      = if (isSubtype) "<:" else ">:"
                 val suggest = if (isSubtype) "+" else "-"
@@ -549,11 +548,11 @@ trait TypeDiagnostics {
         }
 
         if (t.tpe ne null) {
-          for (tp <- t.tpe if !treeTypes(tp)) {
+          for (tp <- t.tpe) if (!treeTypes(tp)) {
             // Include references to private/local aliases (which might otherwise refer to an enclosing class)
             val isAlias = {
               val td = tp.typeSymbolDirect
-              td.isAliasType && (td.isLocal || td.isPrivate)
+              td.isAliasType && (td.isLocalToBlock || td.isPrivate)
             }
             // Ignore type references to an enclosing class. A reference to C must be outside C to avoid warning.
             if (isAlias || !currentOwner.hasTransOwner(tp.typeSymbol)) tp match {
@@ -576,8 +575,10 @@ trait TypeDiagnostics {
         }
         super.traverse(t)
       }
+      def isSuppressed(sym: Symbol): Boolean = sym.hasAnnotation(UnusedClass)
       def isUnusedType(m: Symbol): Boolean = (
         m.isType
+          && !isSuppressed(m)
           && !m.isTypeParameterOrSkolem // would be nice to improve this
           && (m.isPrivate || m.isLocalToBlock)
           && !(treeTypes.exists(_.exists(_.typeSymbolDirect == m)))
@@ -587,6 +588,7 @@ trait TypeDiagnostics {
         )
       def isUnusedTerm(m: Symbol): Boolean = (
         m.isTerm
+          && !isSuppressed(m)
           && (!m.isSynthetic || isSyntheticWarnable(m))
           && ((m.isPrivate && !(m.isConstructor && m.owner.isAbstract)) || m.isLocalToBlock)
           && !targets(m)
@@ -624,7 +626,7 @@ trait TypeDiagnostics {
         clean.sortBy(treepos)
       }
       // local vars which are never set, except those already returned in unused
-      def unsetVars = localVars.filter(v => !setVars(v) && !isUnusedTerm(v)).sortBy(sympos)
+      def unsetVars = localVars.filter(v => !isSuppressed(v) && !setVars(v) && !isUnusedTerm(v)).sortBy(sympos)
       def unusedParams = params.toList.filter(isUnusedParam).sortBy(sympos)
       def inDefinedAt(p: Symbol) = p.owner.isMethod && p.owner.name == nme.isDefinedAt && p.owner.owner.isAnonymousFunction
       def unusedPatVars = patvars.toList.filter(p => isUnusedTerm(p) && !inDefinedAt(p)).sortBy(sympos)
@@ -699,7 +701,7 @@ trait TypeDiagnostics {
       }
       if (settings.warnUnusedPatVars) {
         for (v <- unusedPrivates.unusedPatVars)
-          typer.context.warning(v.pos, s"pattern var ${v.name} in ${v.owner} is never used; `${v.name}@_' suppresses this warning")
+          typer.context.warning(v.pos, s"pattern var ${v.name} in ${v.owner} is never used; `${v.name}@_` suppresses this warning")
       }
       if (settings.warnUnusedParams) {
         def isImplementation(m: Symbol): Boolean = {
@@ -713,7 +715,7 @@ trait TypeDiagnostics {
           import ds._ ; (
             p.name.decoded == "args" && p.owner.isMethod && p.owner.name.decoded == "main"
           ||
-            p.isImplicit && cond(p.tpe.typeSymbol) { case Predef_=:= | Predef_<:< | Predef_Dummy => true }
+            p.isImplicit && cond(p.tpe.typeSymbol) { case SameTypeClass | SubTypeClass | DummyImplicitClass => true }
         )}
         def warningIsOnFor(s: Symbol) = if (s.isImplicit) settings.warnUnusedImplicits else settings.warnUnusedExplicits
         def warnable(s: Symbol) = (
@@ -742,7 +744,7 @@ trait TypeDiagnostics {
     self: Typer =>
 
     def permanentlyHiddenWarning(pos: Position, hidden: Name, defn: Symbol) =
-      context.warning(pos, "imported `%s' is permanently hidden by definition of %s".format(hidden, defn.fullLocationString))
+      context.warning(pos, "imported `%s` is permanently hidden by definition of %s".format(hidden, defn.fullLocationString))
 
     private def symWasOverloaded(sym: Symbol) = sym.owner.isClass && sym.owner.info.member(sym.name).isOverloaded
     private def cyclicAdjective(sym: Symbol)  = if (symWasOverloaded(sym)) "overloaded" else "recursive"

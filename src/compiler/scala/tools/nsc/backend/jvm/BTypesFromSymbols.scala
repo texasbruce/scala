@@ -481,7 +481,7 @@ abstract class BTypesFromSymbols[G <: Global](val global: G) extends BTypes {
       // phase travel necessary: after flatten, the name includes the name of outer classes.
       // if some outer name contains $anon, a non-anon class is considered anon.
       if (exitingPickler(innerClassSym.isAnonymousClass || innerClassSym.isAnonymousFunction)) None
-      else Some(innerClassSym.rawname + innerClassSym.moduleSuffix) // moduleSuffix for module classes
+      else Some(s"${innerClassSym.rawname}${innerClassSym.moduleSuffix}") // moduleSuffix for module classes
     }
 
     Some(NestedInfo(enclosingClass, outerName, innerName, isStaticNestedClass))
@@ -647,7 +647,7 @@ abstract class BTypesFromSymbols[G <: Global](val global: G) extends BTypes {
   /**
    * Return the Java modifiers for the given symbol.
    * Java modifiers for classes:
-   *  - public, abstract, final, strictfp (not used)
+   *  - public, abstract, final
    * for interfaces:
    *  - the same as for classes, without 'final'
    * for fields:

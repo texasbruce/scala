@@ -15,9 +15,9 @@ package tools.nsc
 package transform
 
 import scala.annotation.tailrec
-
 import symtab.Flags._
 import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
 import scala.reflect.internal.util.ListOfNil
 
 /*<export> */
@@ -247,14 +247,15 @@ abstract class UnCurry extends InfoTransform
         }
       }
 
-    def transformArgs(pos: Position, fun: Symbol, args: List[Tree], formals: List[Type]): List[Tree] = {
+    def transformArgs(pos: Position, fun: Symbol, args: List[Tree], params: List[Symbol]): List[Tree] = {
       val isJava = fun.isJavaDefined
-      def transformVarargs(varargsElemType: Type) = {
+
+      def transformVarargs(varargsElemType: Type): List[Tree] = {
         def mkArrayValue(ts: List[Tree], elemtp: Type) =
           ArrayValue(TypeTree(elemtp), ts) setType arrayType(elemtp)
 
         // when calling into scala varargs, make sure it's a sequence.
-        def arrayToSequence(tree: Tree, elemtp: Type, copy: Boolean) = {
+        def arrayToSequence(tree: Tree, elemtp: Type, copy: Boolean): Tree = {
           exitingUncurry {
             localTyper.typedPos(pos) {
               val pt = arrayType(elemtp)
@@ -273,9 +274,10 @@ abstract class UnCurry extends InfoTransform
         }
 
         // when calling into java varargs, make sure it's an array - see bug #1360
-        def sequenceToArray(tree: Tree) = {
+        def sequenceToArray(tree: Tree): Tree = {
           val toArraySym = tree.tpe member nme.toArray
           assert(toArraySym != NoSymbol)
+          @tailrec
           def getClassTag(tp: Type): Tree = {
             val tag = localTyper.resolveClassTag(tree.pos, tp)
             // Don't want bottom types getting any further than this (scala/bug#4024)
@@ -314,7 +316,7 @@ abstract class UnCurry extends InfoTransform
               else arrayToSequence(tree, varargsElemType, copy = isNewCollections) // existing array, make a defensive copy
           }
           else {
-            def mkArray = mkArrayValue(args drop (formals.length - 1), varargsElemType)
+            def mkArray = mkArrayValue(args drop (params.length - 1), varargsElemType)
             if (javaStyleVarArgs) mkArray
             else if (args.isEmpty) gen.mkNil  // avoid needlessly double-wrapping an empty argument list
             else arrayToSequence(mkArray, varargsElemType, copy = false) // fresh array, no need to copy
@@ -328,18 +330,22 @@ abstract class UnCurry extends InfoTransform
             }
           }
         }
-        args.take(formals.length - 1) :+ (suffix setType formals.last)
+        val args1 = ListBuffer[Tree]()
+        args1 ++= args.iterator.take(params.length - 1)
+        args1 += suffix setType params.last.info
+        args1.toList
       }
 
-      val args1 = if (isVarArgTypes(formals)) transformVarargs(formals.last.typeArgs.head.widen) else args
+      val isVarargs = isVarArgsList(params)
+      val args1 = if (isVarargs) transformVarargs(params.last.info.typeArgs.head.widen) else args
 
-      map2(formals, args1) { (formal, arg) =>
-        if (!isByNameParamType(formal)) arg
+      map2Conserve(args1, params) { (arg, param) =>
+        if (!isByNameParamType(param.info)) arg
         else if (isByNameRef(arg)) { // thunk does not need to be forced because it's a reference to a by-name arg passed to a by-name param
           byNameArgs += arg
           arg setType functionType(Nil, arg.tpe)
         } else {
-          log(s"Argument '$arg' at line ${arg.pos.line} is $formal from ${fun.fullName}")
+          log(s"Argument '$arg' at line ${arg.pos.line} is ${param.info} from ${fun.fullName}")
           def canUseDirectly(qual: Tree) = qual.tpe.typeSymbol.isSubClass(FunctionClass(0)) && treeInfo.isExprSafeToInline(qual)
           arg match {
             // don't add a thunk for by-name argument if argument already is an application of
@@ -436,7 +442,7 @@ abstract class UnCurry extends InfoTransform
           if (sym.isMethod) level < settings.elidebelow.value
           else {
             // TODO: report error? It's already done in RefChecks. https://github.com/scala/scala/pull/5539#issuecomment-331376887
-            if (settings.isScala213) reporter.error(sym.pos, s"${sym.name}: Only methods can be marked @elidable.")
+            if (currentRun.isScala213) reporter.error(sym.pos, s"${sym.name}: Only methods can be marked @elidable.")
             false
           }
         }
@@ -482,16 +488,16 @@ abstract class UnCurry extends InfoTransform
               super.transform(tree)
 
           case Apply(fn, args) =>
-            // Read formals before `transform(fn)`, because UnCurry replaces T* by Seq[T] (see DesugaredParameterType).
+            // Read the param symbols before `transform(fn)`, because UnCurry replaces T* by Seq[T] (see DesugaredParameterType).
             // The call to `transformArgs` below needs `formals` that still have varargs.
-            val formals = fn.tpe.paramTypes
+            val fnParams = fn.tpe.params
             val transformedFn = transform(fn)
             // scala/bug#6479: no need to lift in args to label jumps
             // scala/bug#11127: boolean && / || are emitted using jumps, the lhs stack value is consumed by the conditional jump
             val noReceiverOnStack = fn.symbol.isLabel || fn.symbol == currentRun.runDefinitions.Boolean_and || fn.symbol == currentRun.runDefinitions.Boolean_or
             val needLift = needTryLift || !noReceiverOnStack
             withNeedLift(needLift) {
-              treeCopy.Apply(tree, transformedFn, transformTrees(transformArgs(tree.pos, fn.symbol, args, formals)))
+              treeCopy.Apply(tree, transformedFn, transformTrees(transformArgs(tree.pos, fn.symbol, args, fnParams)))
             }
 
           case Assign(_: RefTree, _) =>
@@ -627,8 +633,9 @@ abstract class UnCurry extends InfoTransform
             flatdd
 
         case tree: Try =>
-          if (tree.catches exists (cd => !treeInfo.isCatchCase(cd)))
-            devWarning("VPM BUG - illegal try/catch " + tree.catches)
+          devWarningIf(tree.catches exists (!treeInfo.isCatchCase(_))) {
+            "VPM BUG - illegal try/catch " + tree.catches
+          }
           tree
 
         case Apply(Apply(fn, args), args1) =>
@@ -682,11 +689,6 @@ abstract class UnCurry extends InfoTransform
      * }}}
      */
     private object dependentParamTypeErasure {
-      sealed abstract class ParamTransform {
-        def param: ValDef
-      }
-      final case class Identity(param: ValDef) extends ParamTransform
-      final case class Packed(param: ValDef, tempVal: ValDef) extends ParamTransform
 
       def isDependent(dd: DefDef): Boolean =
         enteringUncurry {
@@ -699,10 +701,23 @@ abstract class UnCurry extends InfoTransform
        */
       def erase(dd: DefDef): (List[List[ValDef]], Tree) = {
         import dd.{ vparamss, rhs }
-        val paramTransforms: List[ParamTransform] =
-          map2(vparamss.flatten, dd.symbol.info.paramss.flatten) { (p, infoParam) =>
+        val (allParams, packedParamsSyms, tempVals): (List[ValDef], List[Symbol], List[ValDef]) = {
+
+          val allParamsBuf: ListBuffer[ValDef] = ListBuffer.empty
+          val packedParamsSymsBuf: ListBuffer[Symbol] = ListBuffer.empty
+          val tempValsBuf: ListBuffer[ValDef] = ListBuffer.empty
+
+          def addPacked(param: ValDef, tempVal: ValDef): Unit = {
+            allParamsBuf += param
+            if (rhs != EmptyTree) {
+              packedParamsSymsBuf += param.symbol
+              tempValsBuf         += tempVal
+            }
+          }
+
+          def addParamTransform(p: ValDef, infoParam: Symbol): Unit = {
             val packedType = infoParam.info
-            if (packedType =:= p.symbol.info) Identity(p)
+            if (packedType =:= p.symbol.info) allParamsBuf += p
             else {
               // The Uncurry info transformer existentially abstracted over value parameters
               // from the previous parameter lists.
@@ -738,9 +753,9 @@ abstract class UnCurry extends InfoTransform
                 // 1. when varargs and byname params are involved, the uncurry transformation desugars these special
                 //    cases to actual typerefs, eg:
                 //    ```
-                //           T*  ~> Seq[T] (Scala-defined varargs)
-                //           T*  ~> Array[T] (Java-defined varargs)
-                //           =>T ~> Function0[T] (by name params)
+                //           T*   ~> Seq[T] (Scala-defined varargs)
+                //           T*   ~> Array[T] (Java-defined varargs)
+                //           => T ~> Function0[T] (by name params)
                 //    ```
                 //    we use the DesugaredParameterType object (defined in scala.reflect.internal.transform.UnCurry)
                 //    to redo this desugaring manually here
@@ -758,19 +773,22 @@ abstract class UnCurry extends InfoTransform
                 val newSym = dd.symbol.newTermSymbol(tempValName, p.pos, SYNTHETIC).setInfo(info)
                 atPos(p.pos)(ValDef(newSym, gen.mkAttributedCast(Ident(p.symbol), info)))
               }
-              Packed(newParam, tempVal)
+              addPacked(newParam, tempVal)
             }
           }
 
-        val allParams = paramTransforms map (_.param)
-        val (packedParams, tempVals) = paramTransforms.collect {
-          case Packed(param, tempVal) => (param, tempVal)
-        }.unzip
+          val viter = vparamss.iterator.flatten
+          val piter = dd.symbol.info.paramss.iterator.flatten
+          while (viter.hasNext && piter.hasNext)
+            addParamTransform(viter.next, piter.next)
+
+          (allParamsBuf.toList, packedParamsSymsBuf.toList, tempValsBuf.toList)
+        }
 
         val rhs1 = if (rhs == EmptyTree || tempVals.isEmpty) rhs else {
           localTyper.typedPos(rhs.pos) {
             // Patch the method body to refer to the temp vals
-            val rhsSubstituted = rhs.substituteSymbols(packedParams map (_.symbol), tempVals map (_.symbol))
+            val rhsSubstituted = rhs.substituteSymbols(packedParamsSyms, tempVals.map(_.symbol))
             // The new method body: { val p$1 = p.asInstanceOf[<dependent type>]; ...; <rhsSubstituted> }
             Block(tempVals, rhsSubstituted)
           }

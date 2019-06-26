@@ -14,6 +14,7 @@ package scala.tools.nsc
 package backend.jvm
 
 import java.{util => ju}
+import scala.annotation.tailrec
 import scala.collection.concurrent
 import scala.tools.asm
 import scala.tools.asm.Opcodes
@@ -57,7 +58,7 @@ abstract class BTypes {
    * A BType is either a primitive type, a ClassBType, an ArrayBType of one of these, or a MethodType
    * referring to BTypes.
    */
-  sealed trait BType {
+  sealed abstract class BType {
     final override def toString: String = {
       val builder = new java.lang.StringBuilder(64)
       buildString(builder)
@@ -65,15 +66,7 @@ abstract class BTypes {
     }
 
     final def buildString(builder: java.lang.StringBuilder): Unit = this match {
-      case UNIT   => builder.append('V')
-      case BOOL   => builder.append('Z')
-      case CHAR   => builder.append('C')
-      case BYTE   => builder.append('B')
-      case SHORT  => builder.append('S')
-      case INT    => builder.append('I')
-      case FLOAT  => builder.append('F')
-      case LONG   => builder.append('J')
-      case DOUBLE => builder.append('D')
+      case p: PrimitiveBType        => builder.append(p.desc)
       case ClassBType(internalName) => builder.append('L').append(internalName).append(';')
       case ArrayBType(component)    => builder.append('['); component.buildString(builder)
       case MethodBType(args, res)   =>
@@ -135,39 +128,33 @@ abstract class BTypes {
         case ArrayBType(component) =>
           if (other == ObjectRef || other == jlCloneableRef || other == jiSerializableRef) true
           else other match {
-            case ArrayBType(otherComponent) => component.conformsTo(otherComponent).orThrow
+            case ArrayBType(otherComponent) =>
+              // Array[Short]().isInstanceOf[Array[Int]] is false
+              // but Array[String]().isInstanceOf[Array[Object]] is true
+              if (component.isPrimitive || otherComponent.isPrimitive) component == otherComponent
+              else component.conformsTo(otherComponent).orThrow
             case _ => false
           }
 
         case classType: ClassBType =>
-          if (isBoxed) {
-            if (other.isBoxed) this == other
-            else if (other == ObjectRef) true
-            else other match {
-              case otherClassType: ClassBType => classType.isSubtypeOf(otherClassType).orThrow // e.g., java/lang/Double conforms to java/lang/Number
-              case _ => false
-            }
-          } else if (isNullType) {
-            if (other.isNothingType) false
-            else if (other.isPrimitive) false
-            else true // Null conforms to all classes (except Nothing) and arrays.
-          } else if (isNothingType) {
-            true
-          } else other match {
+          // Quick test for ObjectRef to make a common case fast
+          other == ObjectRef || (other match {
             case otherClassType: ClassBType => classType.isSubtypeOf(otherClassType).orThrow
-            // case ArrayBType(_) => this.isNullType   // documentation only, because `if (isNullType)` above covers this case
-            case _ =>
-              // isNothingType ||                      // documentation only, because `if (isNothingType)` above covers this case
-              false
-          }
+            case _ => false
+          })
 
-        case UNIT =>
-          other == UNIT
-        case BOOL | BYTE | SHORT | CHAR =>
-          this == other || other == INT || other == LONG // TODO Actually, BOOL does NOT conform to LONG. Even with adapt().
         case _ =>
-          assert(isPrimitive && other.isPrimitive, s"Expected primitive types $this - $other")
-          this == other
+          // there are no bool/byte/short/char primitives at runtime, they are represented as ints.
+          // instructions like i2s are used to truncate, the result is again an int. conformsTo
+          // returns true for conversions that don't need a truncating instruction. see also emitT2T.
+          // note that for primitive arrays, Array[Short]().isInstanceOf[Array[Int]] is false.
+          this == other || ((this, other) match {
+            case (BOOL, BYTE | SHORT | INT) => true
+            case (BYTE, SHORT | INT) => true
+            case (SHORT, INT) => true
+            case (CHAR, INT) => true
+            case _ => false
+          })
       }
     }))
 
@@ -268,7 +255,7 @@ abstract class BTypes {
     def asPrimitiveBType : PrimitiveBType = this.asInstanceOf[PrimitiveBType]
   }
 
-  sealed trait PrimitiveBType extends BType {
+  sealed abstract class PrimitiveBType(val desc: Char) extends BType {
 
     /**
      * The upper bound of two primitive types. The `other` type has to be either a primitive
@@ -315,9 +302,12 @@ abstract class BTypes {
           }
 
         case LONG =>
-          if (other.isIntegralType)  LONG
-          else if (other.isRealType) DOUBLE
-          else                       uncomparable
+          other match {
+            case INT | BYTE | LONG | CHAR | SHORT => LONG
+            case DOUBLE                           => DOUBLE
+            case FLOAT                            => FLOAT
+            case _                                => uncomparable
+          }
 
         case FLOAT =>
           if (other == DOUBLE)          DOUBLE
@@ -333,17 +323,17 @@ abstract class BTypes {
     }
   }
 
-  case object UNIT   extends PrimitiveBType
-  case object BOOL   extends PrimitiveBType
-  case object CHAR   extends PrimitiveBType
-  case object BYTE   extends PrimitiveBType
-  case object SHORT  extends PrimitiveBType
-  case object INT    extends PrimitiveBType
-  case object FLOAT  extends PrimitiveBType
-  case object LONG   extends PrimitiveBType
-  case object DOUBLE extends PrimitiveBType
+  case object UNIT   extends PrimitiveBType('V')
+  case object BOOL   extends PrimitiveBType('Z')
+  case object CHAR   extends PrimitiveBType('C')
+  case object BYTE   extends PrimitiveBType('B')
+  case object SHORT  extends PrimitiveBType('S')
+  case object INT    extends PrimitiveBType('I')
+  case object FLOAT  extends PrimitiveBType('F')
+  case object LONG   extends PrimitiveBType('J')
+  case object DOUBLE extends PrimitiveBType('D')
 
-  sealed trait RefBType extends BType {
+  sealed abstract class RefBType extends BType {
     /**
      * The class or array type of this reference type. Used for ANEWARRAY, MULTIANEWARRAY,
      * INSTANCEOF and CHECKCAST instructions. Also used for emitting invokevirtual calls to
@@ -635,7 +625,7 @@ abstract class BTypes {
         // synchronization required to ensure the apply is finished
         // which populates info. ClassBType doesnt escape apart from via the map
         // and the object mutex is locked prior to insertion. See apply
-        this.synchronized()
+        this.synchronized {}
       assert(_info != null, s"ClassBType.info not yet assigned: $this")
       _info
     }
@@ -903,6 +893,7 @@ abstract class BTypes {
       case _ => 1
     }
 
+    @tailrec
     def elementType: BType = componentType match {
       case a: ArrayBType => a.elementType
       case t => t

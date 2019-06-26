@@ -31,7 +31,7 @@ package scala
  * }
  *  }}}
  */
-trait Function2[@specialized(scala.Int, scala.Long, scala.Double) -T1, @specialized(scala.Int, scala.Long, scala.Double) -T2, @specialized(scala.Unit, scala.Boolean, scala.Int, scala.Float, scala.Long, scala.Double) +R] extends AnyRef { self =>
+trait Function2[@specialized(Specializable.Args) -T1, @specialized(Specializable.Args) -T2, @specialized(Specializable.Return) +R] extends AnyRef { self =>
   /** Apply the body of this function to the arguments.
    *  @return   the result of function application.
    */
@@ -49,8 +49,8 @@ trait Function2[@specialized(scala.Int, scala.Long, scala.Double) -T1, @speciali
    *  @return   a function `f` such that `f((x1, x2)) == f(Tuple2(x1, x2)) == apply(x1, x2)`
    */
 
-  @annotation.unspecialized def tupled: Tuple2[T1, T2] => R = {
-    case Tuple2(x1, x2) => apply(x1, x2)
+  @annotation.unspecialized def tupled: ((T1, T2)) => R = {
+    case ((x1, x2)) => apply(x1, x2)
   }
-  override def toString() = "<function2>"
+  override def toString(): String = "<function2>"
 }

@@ -14,14 +14,12 @@ package scala
 package collection
 package mutable
 
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.generic.DefaultSerializable
+
 
 /** This class implements mutable sets using a hashtable.
  *  The iterator and all traversal methods of this class visit elements in the order they were inserted.
- *
- *  @author  Matthias Zenger
- *  @author  Martin Odersky
- *  @author  Pavel Pavlov
- *  @since   1
  *
  *  @tparam A     the type of the elements contained in this set.
  *
@@ -35,9 +33,14 @@ package mutable
 class LinkedHashSet[A]
   extends AbstractSet[A]
     with SetOps[A, LinkedHashSet, LinkedHashSet[A]]
-    with StrictOptimizedIterableOps[A, LinkedHashSet, LinkedHashSet[A]] {
+    with StrictOptimizedIterableOps[A, LinkedHashSet, LinkedHashSet[A]]
+    with IterableFactoryDefaults[A, LinkedHashSet]
+    with DefaultSerializable  {
 
   override def iterableFactory: IterableFactory[LinkedHashSet] = LinkedHashSet
+
+  // stepper is not overridden to use XTableStepper because that stepper would not return the
+  // elements in insertion order
 
   type Entry = LinkedHashSet.Entry[A]
 
@@ -65,6 +68,22 @@ class LinkedHashSet[A]
         }
       }
     }
+
+  override def last: A =
+    if (size > 0) lastEntry.key
+    else throw new java.util.NoSuchElementException("Cannot call .last on empty LinkedHashSet")
+      
+  override def lastOption: Option[A] =
+    if (size > 0) Some(lastEntry.key)
+    else None
+
+  override def head: A =
+    if (size > 0) firstEntry.key
+    else throw new java.util.NoSuchElementException("Cannot call .head on empty LinkedHashSet")
+      
+  override def headOption: Option[A] =
+    if (size > 0) Some(firstEntry.key)
+    else None
 
   override def size: Int = table.tableSize
   override def knownSize: Int = size
@@ -149,7 +168,6 @@ object LinkedHashSet extends IterableFactory[LinkedHashSet] {
   def newBuilder[A] = new GrowableBuilder(empty[A])
 
   /** Class for the linked hash set entry, used internally.
-   *  @since 2.10
    */
   private[mutable] final class Entry[A](val key: A) extends HashEntry[A, Entry[A]] {
     var earlier: Entry[A] = null

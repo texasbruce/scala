@@ -43,10 +43,10 @@ import scala.annotation.meta._
  *
  *  @param  message the message to print during compilation if the member was overridden
  *  @param  since   a string identifying the first version in which overriding was deprecated
- *  @since  2.10
  *  @see    [[scala.deprecated]]
  *  @see    [[scala.deprecatedInheritance]]
  *  @see    [[scala.deprecatedName]]
  */
 @getter @setter @beanGetter @beanSetter
+@deprecatedInheritance("Scheduled for being final in 2.14", "2.13.0")
 class deprecatedOverriding(message: String = "", since: String = "") extends scala.annotation.StaticAnnotation

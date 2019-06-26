@@ -46,9 +46,6 @@ import scala.collection.JavaConverters._
   * There should be no direct dependency of this code on the compiler;
   * it should all go through the `intp` reference to the interpreter,
   * or maybe eventually even over the wire to a remote compiler.
-  *
-  * @author Moez A. Abdel-Gawad
-  * @author Lex Spoon
   */
 class ILoop(config: ShellConfig, inOverride: BufferedReader = null,
             protected val out: PrintWriter = new PrintWriter(Console.out, true)) extends LoopCommands {
@@ -525,10 +522,15 @@ class ILoop(config: ShellConfig, inOverride: BufferedReader = null,
   def replay(): Unit = {
     if (replayCommandStack.isEmpty)
       echo("Nothing to replay.")
-    else for (cmd <- replayCommands) {
-      echo("Replaying: " + cmd)  // flush because maybe cmd will have its own output
-      command(cmd)
-      echo("")
+    else {
+      val reprompt = "replay> "
+      intp.reporter.indenting(reprompt.length) {
+        for (cmd <- replayCommands) {
+          echo(s"$reprompt$cmd")
+          command(cmd)
+          echo("") // flush because maybe cmd will have its own output
+        }
+      }
     }
   }
   /** `reset` the interpreter in an attempt to start fresh.
@@ -666,7 +668,7 @@ class ILoop(config: ShellConfig, inOverride: BufferedReader = null,
 
   def withFile[A](filename: String)(action: File => A): Option[A] = intp.withLabel(filename) {
     val res = Some(File(filename)) filter (_.exists) map action
-    if (res.isEmpty) intp.reporter.warning(NoPosition, s"File `$filename' does not exist.")  // courtesy side-effect
+    if (res.isEmpty) intp.reporter.warning(NoPosition, s"File `$filename` does not exist.")  // courtesy side-effect
     res
   }
 
@@ -850,13 +852,14 @@ class ILoop(config: ShellConfig, inOverride: BufferedReader = null,
     }
     def compileCode() = paste.compilePaste(label = label, code = code)
 
-    if (code.nonEmpty) {
-      if (raw || paste.isPackaged(code)) compileCode() else interpretCode()
-    }
+    if (code.nonEmpty)
+      intp.reporter.indenting(0) {
+        if (raw || paste.isPackaged(code)) compileCode() else interpretCode()
+      }
     result
   }
 
-  private val continueText   = {
+  private val continueText = {
     val text   = enversion(continueString)
     val margin = promptText.linesIterator.toList.last.length - text.length
     if (margin > 0) " " * margin + text else text
@@ -982,7 +985,7 @@ class ILoop(config: ShellConfig, inOverride: BufferedReader = null,
   /** Start an interpreter with the given settings.
    *  @return true if successful
    */
-  def run(interpreterSettings: Settings): Boolean = savingContextLoader {
+  def run(interpreterSettings: Settings): Boolean = {
     if (!batchMode) printWelcome()
 
     in = defaultIn

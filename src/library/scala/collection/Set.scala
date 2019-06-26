@@ -22,7 +22,8 @@ import java.lang.String
 trait Set[A]
   extends Iterable[A]
     with SetOps[A, Set, Set[A]]
-    with Equals {
+    with Equals
+    with IterableFactoryDefaults[A, Set] {
 
   def canEqual(that: Any) = true
 
@@ -38,9 +39,7 @@ trait Set[A]
 
   override def hashCode(): Int = MurmurHash3.setHash(toIterable)
 
-  override def iterableFactory: IterableFactory[IterableCC] = Set
-
-  def empty: IterableCC[A] = iterableFactory.empty
+  override def iterableFactory: IterableFactory[Set] = Set
 
   override protected[this] def stringPrefix: String = "Set"
 
@@ -64,8 +63,7 @@ trait SetOps[A, +CC[_], +C <: SetOps[A, CC, C]]
     *  @param elem the element to test for membership.
     *  @return  `true` if `elem` is contained in this set, `false` otherwise.
     */
-  @deprecatedOverriding("This method should be final, but is not due to scala/bug#10853", "2.13.0")
-  /*@`inline` final*/ def apply(elem: A): Boolean = this.contains(elem)
+  @`inline` final def apply(elem: A): Boolean = this.contains(elem)
 
   /** Tests whether this set is a subset of another set.
     *
@@ -115,7 +113,6 @@ trait SetOps[A, +CC[_], +C <: SetOps[A, CC, C]]
     *
     *  $willForceEvaluation
     *
-    *  @author Eastsun
     */
   private class SubsetsItr(elms: IndexedSeq[A], len: Int) extends AbstractIterator[C] {
     private[this] val idxs = Array.range(0, len+1)
@@ -168,7 +165,7 @@ trait SetOps[A, +CC[_], +C <: SetOps[A, CC, C]]
   @`inline` final def &~ (that: Set[A]): C = this diff that
 
   @deprecated("Consider requiring an immutable Set", "2.13.0")
-  def -- (that: IterableOnce[A]): C = fromSpecific(coll.toSet.removeAll(that))
+  def -- (that: IterableOnce[A]): C = fromSpecific(coll.toSet.removedAll(that))
 
   @deprecated("Consider requiring an immutable Set or fall back to Set.diff", "2.13.0")
   def - (elem: A): C = diff(Set(elem))
@@ -201,7 +198,7 @@ trait SetOps[A, +CC[_], +C <: SetOps[A, CC, C]]
   def + (elem1: A, elem2: A, elems: A*): C = fromSpecific(new View.Concat(new View.Appended(new View.Appended(toIterable, elem1), elem2), elems))
 
   /** Alias for `concat` */
-  @`inline` final def ++ (that: collection.Iterable[A]): C = concat(that)
+  @`inline` final def ++ (that: collection.IterableOnce[A]): C = concat(that)
 
   /** Computes the union between of set and another set.
     *
@@ -213,11 +210,6 @@ trait SetOps[A, +CC[_], +C <: SetOps[A, CC, C]]
 
   /** Alias for `union` */
   @`inline` final def | (that: Set[A]): C = concat(that)
-
-  /** The empty set of the same type as this set
-    * @return  an empty set of type `C`.
-    */
-  def empty: C
 }
 
 /**

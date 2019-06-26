@@ -12,10 +12,10 @@
 
 package scala.tools.nsc.transform.patmat
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 import scala.tools.nsc.Global
 import scala.tools.nsc.ast
-import scala.language.postfixOps
 import scala.tools.nsc.transform.TypingTransformers
 import scala.tools.nsc.transform.Transform
 import scala.reflect.internal.util.Statistics
@@ -207,13 +207,12 @@ trait Interface extends ast.TreeDSL {
       def apply(from: Symbol, to: Tree): Substitution = new Substitution(from :: Nil, to :: Nil)
       // requires sameLength(from, to)
       def apply(from: List[Symbol], to: List[Tree]): Substitution =
-        if (from nonEmpty) new Substitution(from, to) else EmptySubstitution
+        if (from.isEmpty) EmptySubstitution else new Substitution(from, to)
     }
 
     class Substitution(val from: List[Symbol], val to: List[Tree]) {
       import global.{Transformer, Ident, NoType, TypeTree, SingleType}
 
-      private val toIdents = to.forall(_.isInstanceOf[Ident])
       private def typedStable(t: Tree) = typer.typed(t.shallowDuplicate, Mode.MonoQualifierModes | Mode.TYPEPATmode)
       lazy val toTypes: List[Type] = to map (tree => typedStable(tree).tpe)
 
@@ -224,19 +223,18 @@ trait Interface extends ast.TreeDSL {
         // since about half of the typedSubst's end up being no-ops, the check below shaves off 5% of the time spent in typedSubst
 
         val checkType = new TypeCollector[Boolean](false) {
-          def traverse(tp: Type): Unit = {
+          override def apply(tp: Type): Unit =
             if (!result) {
               tp match {
-                case SingleType(_, sym) =>
-                  if (from contains sym) {
-                    if (!toIdents) global.devWarning(s"Unexpected substitution of non-Ident into TypeTree, subst= $this")
-                    result = true
+                case SingleType(_, sym) if from contains sym =>
+                  global.devWarningIf(to.exists(!_.isInstanceOf[Ident])) {
+                    s"Unexpected substitution of non-Ident into TypeTree, subst= $this"
                   }
+                  result = true
                 case _ =>
+                    tp.foldOver(this)
               }
-              tp.mapOver(this)
             }
-          }
         }
         val containsSym = tree.exists {
           case i@Ident(_) => from contains i.symbol
@@ -255,6 +253,7 @@ trait Interface extends ast.TreeDSL {
 
 
           override def transform(tree: Tree): Tree = {
+            @tailrec
             def subst(from: List[Symbol], to: List[Tree]): Tree =
               if (from.isEmpty) tree
               else if (tree.symbol == from.head) typedIfOrigTyped(typedStable(to.head).setPos(tree.pos), tree.tpe)
@@ -273,7 +272,7 @@ trait Interface extends ast.TreeDSL {
           }
         }
         if (containsSym) {
-          if (toIdents)
+          if (to.forall(_.isInstanceOf[Ident]))
             tree.duplicate.substituteSymbols(from, to.map(_.symbol)) // scala/bug#7459 catches `case t => new t.Foo`
           else
             substIdentsForTrees.transform(tree)

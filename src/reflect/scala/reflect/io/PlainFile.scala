@@ -14,6 +14,10 @@ package scala
 package reflect
 package io
 
+import java.nio.ByteBuffer
+import java.nio.file.StandardOpenOption
+import java.util
+
 /** ''Note:  This library is considered experimental and should not be used unless you know what you are doing.'' */
 class PlainDirectory(givenPath: Directory) extends PlainFile(givenPath) {
   override def isDirectory = true
@@ -49,6 +53,20 @@ class PlainFile(val givenPath: Path) extends AbstractFile {
   override def input = givenPath.toFile.inputStream()
   override def output = givenPath.toFile.outputStream()
   override def sizeOption = Some(givenPath.length.toInt)
+  override def toByteBuffer: ByteBuffer = {
+    val chan = java.nio.file.Files.newByteChannel(file.toPath, util.EnumSet.of(StandardOpenOption.READ))
+    try {
+      import java.nio.ByteBuffer
+      val buffer: ByteBuffer = ByteBuffer.allocate(chan.size.toInt)
+      var endOfInput = false
+      while (!endOfInput ) {
+        endOfInput = chan.read(buffer) < 0
+        buffer.compact()
+      }
+      buffer.flip()
+      buffer
+    } finally chan.close()
+  }
 
   override def hashCode(): Int = fpath.hashCode()
   override def equals(that: Any): Boolean = that match {
@@ -101,7 +119,7 @@ class PlainFile(val givenPath: Path) extends AbstractFile {
     new PlainFile(givenPath / name)
 }
 
-private[scala] class PlainNioFile(nioPath: java.nio.file.Path) extends AbstractFile {
+final class PlainNioFile(val nioPath: java.nio.file.Path) extends AbstractFile {
   import java.nio.file._
 
   assert(nioPath ne null)
@@ -115,7 +133,29 @@ private[scala] class PlainNioFile(nioPath: java.nio.file.Path) extends AbstractF
 
   override lazy val canonicalPath = super.canonicalPath
 
-  override def underlyingSource  = Some(this)
+  override def underlyingSource  = {
+    val fileSystem = nioPath.getFileSystem
+    fileSystem.provider().getScheme match {
+      case "jar" =>
+        val fileStores = fileSystem.getFileStores.iterator()
+        if (fileStores.hasNext) {
+          val jarPath = fileStores.next().name
+          try {
+            Some(new PlainNioFile(Paths.get(jarPath.stripSuffix(fileSystem.getSeparator))))
+          } catch {
+            case _: InvalidPathException =>
+              None
+          }
+        } else None
+      case "jrt" =>
+        if (nioPath.getNameCount > 2 && nioPath.startsWith("/modules")) {
+          // TODO limit this to OpenJDK based JVMs?
+          val moduleName = nioPath.getName(1)
+          Some(new PlainNioFile(Paths.get(System.getProperty("java.home"), "jmods", moduleName.toString + ".jmod")))
+        } else None
+      case _ => None
+    }
+  }
 
   private val fpath = nioPath.toAbsolutePath.toString
 

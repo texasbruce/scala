@@ -58,10 +58,8 @@ trait ReplCore {
     */
   def bindValue(name: String, value: Any): Result = bind(name, value.asInstanceOf[AnyRef].getClass.getName, value)
 
-  /** Set the current Java "context" class loader to this interpreter's class loader
-    *
-    */
-  def setContextClassLoader(): Unit
+  @deprecated("The thread context classloader is now set and restored around execution of REPL line, this method is now a no-op.", since = "2.12.0")
+  final def setContextClassLoader() = () // Called from sbt-interface/0.12.4/src/ConsoleInterface.scala:39
 }
 
 /**
@@ -239,6 +237,9 @@ trait ReplReporter extends Reporter {
   /** Do not remove interpreter wrappers ($iw etc) from all output during the execution of `body`.
     */
   def withoutUnwrapping(body: => Unit): Unit
+
+  /** Change indentation due to prompt. */
+  def indenting(n: Int)(body: => Unit): Unit
 
 
   /** Print result (Right --> success, Left --> error)

@@ -13,13 +13,13 @@
 package scala.tools.nsc
 package ast
 
+import scala.annotation.tailrec
 import symtab._
 import util.DocStrings._
 import scala.collection.mutable
 
 /*
  *  @author  Martin Odersky
- *  @version 1.0
  */
 trait DocComments { self: Global =>
 
@@ -302,7 +302,8 @@ trait DocComments { self: Global =>
    *  @param vble  The variable for which a definition is searched
    *  @param site  The class for which doc comments are generated
    */
-  def lookupVariable(vble: String, site: Symbol): Option[String] = site match {
+  @tailrec
+  final def lookupVariable(vble: String, site: Symbol): Option[String] = site match {
     case NoSymbol => None
     case _        =>
       val searchList =
@@ -311,7 +312,8 @@ trait DocComments { self: Global =>
 
       searchList collectFirst { case x if defs(x) contains vble => defs(x)(vble) } match {
         case Some(str) if str startsWith "$" => lookupVariable(str.tail, site)
-        case res                             => res orElse lookupVariable(vble, site.owner)
+        case s @ Some(str)                   => s
+        case None                            => lookupVariable(vble, site.owner)
       }
   }
 
@@ -326,6 +328,7 @@ trait DocComments { self: Global =>
   protected def expandVariables(initialStr: String, sym: Symbol, site: Symbol): String = {
     val expandLimit = 10
 
+    @tailrec
     def expandInternal(str: String, depth: Int): String = {
       if (depth >= expandLimit)
         throw new ExpansionLimitExceeded(str)
@@ -407,6 +410,8 @@ trait DocComments { self: Global =>
       val commentStart = skipLineLead(raw, codeEnd + 1) min end
       val comment      = "/** " + raw.substring(commentStart, end) + "*/"
       val commentPos   = subPos(commentStart, end)
+
+      self.currentRun.reporting.deprecationWarning(codePos, "The @usecase tag is deprecated, instead use the @example tag to document the usage of your API", "2.13.0")
 
       UseCase(DocComment(comment, commentPos, codePos), code, codePos)
     }
@@ -526,6 +531,7 @@ trait DocComments { self: Global =>
               (typeRef(NoPrefix, alias, Nil), false)
           }
 
+      @tailrec
       def subst(sym: Symbol, from: List[Symbol], to: List[(Type, Boolean)]): (Type, Boolean) =
         if (from.isEmpty) (sym.tpe, false)
         else if (from.head == sym) to.head

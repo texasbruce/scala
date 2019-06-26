@@ -58,23 +58,6 @@ private[internal] trait GlbLubs {
     println("** Depth is " + depth + "\n" + formatted)
   }
 
-  /** From a list of types, find any which take type parameters
-    *  where the type parameter bounds contain references to other
-    *  any types in the list (including itself.)
-    *
-    *  @return List of symbol pairs holding the recursive type
-    *    parameter and the parameter which references it.
-    */
-  def findRecursiveBounds(ts: List[Type]): List[(Symbol, Symbol)] = {
-    if (ts.isEmpty) Nil
-    else {
-      val sym = ts.head.typeSymbol
-      require(ts.tail forall (_.typeSymbol == sym), ts)
-      for (p <- sym.typeParams ; in <- sym.typeParams ; if in.info.bounds contains p) yield
-        p -> in
-    }
-  }
-
   /** Given a matrix `tsBts` whose columns are basetype sequences (and the symbols `tsParams` that should be interpreted as type parameters in this matrix),
     * compute its least sorted upwards closed upper bound relative to the following ordering <= between lists of types:
     *
@@ -92,7 +75,8 @@ private[internal] trait GlbLubs {
     var lubListDepth = Depth.Zero
     // This catches some recursive situations which would otherwise
     // befuddle us, e.g. pos/hklub0.scala
-    def isHotForTs(xs: List[Type]) = ts exists (_.typeParams == xs.map(_.typeSymbol))
+    def isHotForT(tyPar: Symbol, x: Type): Boolean = tyPar eq x.typeSymbol
+    def isHotForTs(xs: List[Type]) = ts.exists(_.typeParams.corresponds(xs)(isHotForT(_,_)))
 
     def elimHigherOrderTypeParam(tp: Type) = tp match {
       case TypeRef(_, _, args) if args.nonEmpty && isHotForTs(args) =>
@@ -261,12 +245,12 @@ private[internal] trait GlbLubs {
         // the type constructor of the calculated lub instead.  This
         // is because lubbing type constructors tends to result in types
         // which have been applied to dummies or Nothing.
-        ts.map(_.typeParams.size).distinct match {
-          case x :: Nil if res.typeParams.size != x =>
-            logResult(s"Stripping type args from lub because $res is not consistent with $ts")(res.typeConstructor)
-          case _                                    =>
-            res
-        }
+        val rtps = res.typeParams.size
+        val hs = ts.head.typeParams.size
+        if (hs != rtps && ts.forall(_.typeParams.size == hs))
+          logResult(s"Stripping type args from lub because $res is not consistent with $ts")(res.typeConstructor)
+        else
+          res
       }
       finally {
         lubResults.clear()
@@ -280,10 +264,8 @@ private[internal] trait GlbLubs {
     def lub0(ts0: List[Type]): Type = elimSub(ts0, depth) match {
       case List() => NothingTpe
       case List(t) => t
-      case ts @ PolyType(tparams, _) :: _ =>
-        val tparams1 = map2(tparams, matchingBounds(ts, tparams).transpose)((tparam, bounds) =>
-          tparam.cloneSymbol.setInfo(glb(bounds, depth)))
-        PolyType(tparams1, lub0(matchingInstTypes(ts, tparams1)))
+      case (pt @ PolyType(_, _)) :: rest =>
+        polyTypeMatch(pt, rest, depth, glb, lub0)
       case ts @ (mt @ MethodType(params, _)) :: rest =>
         MethodType(params, lub0(matchingRestypes(ts, mt.paramTypes)))
       case ts @ NullaryMethodType(_) :: rest =>
@@ -371,7 +353,7 @@ private[internal] trait GlbLubs {
             // In theory this should not be necessary, but higher-order type
             // parameters are not handled correctly.
             val ok = ts forall { t =>
-              isSubType(t, lubRefined, depth) || {
+              isSubType(t, lubRefined, depth.decr) || {
                 if (settings.debug || printLubs) {
                   Console.println(
                     "Malformed lub: " + lubRefined + "\n" +
@@ -444,10 +426,8 @@ private[internal] trait GlbLubs {
     def glb0(ts0: List[Type]): Type = ts0 match {
       case List() => AnyTpe
       case List(t) => t
-      case ts @ PolyType(tparams, _) :: _ =>
-        val tparams1 = map2(tparams, matchingBounds(ts, tparams).transpose)((tparam, bounds) =>
-          tparam.cloneSymbol.setInfo(lub(bounds, depth)))
-        PolyType(tparams1, glbNorm(matchingInstTypes(ts, tparams1), depth))
+      case (pt @ PolyType(_, _)) :: rest =>
+        polyTypeMatch(pt, rest, depth, lub, glb0)
       case ts @ (mt @ MethodType(params, _)) :: rest =>
         MethodType(params, glbNorm(matchingRestypes(ts, mt.paramTypes), depth))
       case ts @ NullaryMethodType(_) :: rest =>
@@ -469,30 +449,34 @@ private[internal] trait GlbLubs {
       try {
         val (ts, tparams) = stripExistentialsAndTypeVars(ts0)
         val glbOwner = commonOwner(ts)
-        def refinedToParents(t: Type): List[Type] = t match {
-          case RefinedType(ps, _) => ps flatMap refinedToParents
-          case _ => List(t)
+        val ts1 = {
+          val res = mutable.ListBuffer.empty[Type]
+          def loop(ty: Type): Unit = ty match {
+            case RefinedType(ps, _) => ps.foreach(loop)
+            case _ => res += ty
+          }
+          ts foreach loop
+          res.toList
         }
-        def refinedToDecls(t: Type): List[Scope] = t match {
-          case RefinedType(ps, decls) =>
-            val dss = ps flatMap refinedToDecls
-            if (decls.isEmpty) dss else decls :: dss
-          case _ => List()
-        }
-        val ts1 = ts flatMap refinedToParents
-        val glbBase = intersectionType(ts1, glbOwner)
         val glbType =
-          if (phase.erasedTypes || depth.isZero) glbBase
+          if (phase.erasedTypes || depth.isZero)
+            intersectionType(ts1, glbOwner)
           else {
             val glbRefined = refinedType(ts1, glbOwner)
             val glbThisType = glbRefined.typeSymbol.thisType
             def glbsym(proto: Symbol): Symbol = {
               val prototp = glbThisType.memberInfo(proto)
-              val syms = for (t <- ts;
-                              alt <- (t.nonPrivateMember(proto.name).alternatives)
-                              if glbThisType.memberInfo(alt) matches prototp
-              ) yield alt
-              val symtypes = syms map glbThisType.memberInfo
+              val symtypes: List[Type] = {
+                val res = mutable.ListBuffer.empty[Type]
+                ts foreach { t =>
+                  t.nonPrivateMember(proto.name).alternatives foreach { alt =>
+                    val mi = glbThisType.memberInfo(alt)
+                    if (mi matches prototp)
+                      res += mi
+                  }
+                }
+                res.toList
+              }
               assert(!symtypes.isEmpty)
               proto.cloneSymbol(glbRefined.typeSymbol).setInfoOwnerAdjusted(
                 if (proto.isTerm) glb(symtypes, depth.decr)
@@ -521,18 +505,25 @@ private[internal] trait GlbLubs {
             if (globalGlbDepth < globalGlbLimit)
               try {
                 globalGlbDepth = globalGlbDepth.incr
-                val dss = ts flatMap refinedToDecls
-                for (ds <- dss; sym <- ds.iterator)
-                  if (globalGlbDepth < globalGlbLimit && !specializesSym(glbThisType, sym, depth))
-                    try {
-                      addMember(glbThisType, glbRefined, glbsym(sym), depth)
-                    } catch {
-                      case ex: NoCommonType =>
-                    }
+                def foreachRefinedDecls(ty: Type): Unit = ty match {
+                  case RefinedType(ps, decls) =>
+                    ps foreach foreachRefinedDecls
+                    if (! decls.isEmpty)
+                      decls.iterator.foreach { sym =>
+                        if (globalGlbDepth < globalGlbLimit && !specializesSym(glbThisType, sym, depth))
+                          try {
+                            addMember(glbThisType, glbRefined, glbsym(sym), depth)
+                          } catch {
+                            case ex: NoCommonType =>
+                          }
+                      }
+                  case _ =>
+                }
+                ts foreach foreachRefinedDecls
               } finally {
                 globalGlbDepth = globalGlbDepth.decr
               }
-            if (glbRefined.decls.isEmpty) glbBase else glbRefined
+            if (glbRefined.decls.isEmpty) intersectionType(ts1, glbOwner) else glbRefined
           }
         existentialAbstraction(tparams, glbType)
       } catch {
@@ -552,31 +543,42 @@ private[internal] trait GlbLubs {
     *  Returns list of list of bounds infos, where corresponding type
     *  parameters are renamed to tparams.
     */
-  private def matchingBounds(tps: List[Type], tparams: List[Symbol]): List[List[Type]] = {
-    def getBounds(tp: Type): List[Type] = tp match {
-      case PolyType(tparams1, _) if sameLength(tparams1, tparams) =>
-        tparams1 map (tparam => tparam.info.substSym(tparams1, tparams))
-      case tp =>
-        if (tp ne tp.normalize) getBounds(tp.normalize)
-        else throw new NoCommonType(tps)
-    }
-    tps map getBounds
-  }
+  private def polyTypeMatch(
+    ptHead: PolyType,
+    ptRest: List[Type],
+    depth: Depth,
+    infoBoundTop: (List[Type], Depth) => Type,
+    resultTypeBottom: List[Type] => Type
+  ): PolyType = {
+    val tparamsHead: List[Symbol] = ptHead.typeParams
 
-  /** All types in list must be polytypes with type parameter lists of
-    *  same length as tparams.
-    *  Returns list of instance types, where corresponding type
-    *  parameters are renamed to tparams.
-    */
-  private def matchingInstTypes(tps: List[Type], tparams: List[Symbol]): List[Type] = {
-    def transformResultType(tp: Type): Type = tp match {
-      case PolyType(tparams1, restpe) if sameLength(tparams1, tparams) =>
-        restpe.substSym(tparams1, tparams)
+    @tailrec
+    def normalizeIter(ty: Type): PolyType = ty match {
+      case pt @ PolyType(tparams1, _) if sameLength(tparams1, tparamsHead) => pt
       case tp =>
-        if (tp ne tp.normalize) transformResultType(tp.normalize)
-        else throw new NoCommonType(tps)
+        val tpn = tp.normalize
+        if (tp ne tpn) normalizeIter(tpn) else throw new NoCommonType(ptHead :: ptRest)
     }
-    tps map transformResultType
+
+    // Since ptHead = PolyType(tparamsHead, _), no need to normalize it or unify tpaams
+    val ntps: List[PolyType]   = ptHead :: ptRest.map(normalizeIter)
+
+    val tparams1: List[Symbol] = {
+      def unifyBounds(ntp: PolyType): List[Type] = {
+        val tparams1 = ntp.typeParams
+        tparams1 map (tparam => tparam.info.substSym(tparams1, tparamsHead))
+      }
+      val boundsTts : List[List[Type]] = ntps.tail.map(unifyBounds).transpose
+      map2(tparamsHead, boundsTts){ (tparam, bounds) =>
+        tparam.cloneSymbol.setInfo(infoBoundTop(tparam.info :: bounds, depth))
+      }
+    }
+    // Do we also need to apply substSym(typeParams, tparams1) to ptHead.resultType ??
+    val matchingInstTypes: List[Type] = ntps.map { ntp =>
+      ntp.resultType.substSym(ntp.typeParams, tparams1)
+    }
+
+    PolyType(tparams1, resultTypeBottom(matchingInstTypes))
   }
 
   /** All types in list must be method types with equal parameter types.

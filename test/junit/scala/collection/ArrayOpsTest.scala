@@ -39,6 +39,14 @@ class ArrayOpsTest {
     assertEquals(6, a.foldLeft(0){ (a, b) => a+b })
     assertEquals(6, a.foldRight(0){ (a, b) => a+b })
     assertEquals(6, a.fold(0){ (a, b) => a+b })
+    val b = Array[Int]()
+    assertEquals(0, b.foldLeft(0){ (a, b) => a+b })
+    assertEquals(0, b.foldRight(0){ (a, b) => a+b })
+    assertEquals(0, b.fold(0){ (a, b) => a+b })
+    val c = Array(1)
+    assertEquals(3, c.foldLeft(2){ (a, b) => a+b })
+    assertEquals(3, c.foldRight(2){ (a, b) => a+b })
+    assertEquals(3, c.fold(2){ (a, b) => a+b })
   }
 
   @Test
@@ -107,5 +115,11 @@ class ArrayOpsTest {
   def copyToArrayOutOfBoundsTest: Unit = {
     val target = Array[Int]()
     assertEquals(0, Array(1,2).copyToArray(target, 1, 0))
+  }
+
+  @Test
+  def t11499(): Unit = {
+    val a: Array[Byte] = new Array[Byte](1000).sortWith { _ < _ }
+    assertEquals(0, a(0))
   }
 }

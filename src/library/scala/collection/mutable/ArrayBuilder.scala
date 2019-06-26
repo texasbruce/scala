@@ -17,8 +17,6 @@ import scala.reflect.ClassTag
 
 /** A builder class for arrays.
  *
- *  @since 2.8
- *
  *  @tparam T    the type of the elements for the builder.
  */
 @SerialVersionUID(3L)
@@ -30,6 +28,8 @@ sealed abstract class ArrayBuilder[T]
   protected var size: Int = 0
 
   def length: Int = size
+
+  override def knownSize: Int = size
 
   protected[this] final def ensureSize(size: Int): Unit = {
     if (capacity < size || capacity == 0) {
@@ -72,8 +72,6 @@ sealed abstract class ArrayBuilder[T]
 }
 
 /** A companion object for array builders.
- *
- *  @since 2.8
  */
 object ArrayBuilder {
 
@@ -82,7 +80,7 @@ object ArrayBuilder {
    *  @tparam T     type of the elements for the array builder, with a `ClassTag` context bound.
    *  @return       a new empty array builder.
    */
-  def make[T: ClassTag]: ArrayBuilder[T] = {
+  @inline def make[T: ClassTag]: ArrayBuilder[T] = {
     val tag = implicitly[ClassTag[T]]
     tag.runtimeClass match {
       case java.lang.Byte.TYPE      => new ArrayBuilder.ofByte().asInstanceOf[ArrayBuilder[T]]

@@ -24,10 +24,6 @@ import scala.annotation.tailrec
   *  @tparam K      the type of the keys contained in this vector map.
   *  @tparam V      the type of the values associated with the keys in this vector map.
   *
-  * @author Matthew de Detrich
-  * @author Odd Möller
-  * @version 2.13
-  * @since 2.13
   * @define coll immutable vector map
   * @define Coll `immutable.VectorMap`
   */
@@ -36,8 +32,8 @@ final class VectorMap[K, +V] private (
     private[immutable] val underlying: Map[K, (Int, V)], dummy: Boolean)
   extends AbstractMap[K, V]
     with SeqMap[K, V]
-    with MapOps[K, V, VectorMap, VectorMap[K, V]]
-    with StrictOptimizedIterableOps[(K, V), Iterable, VectorMap[K, V]] {
+    with StrictOptimizedMapOps[K, V, VectorMap, VectorMap[K, V]]
+    with MapFactoryDefaults[K, V, VectorMap, Iterable] {
 
   import VectorMap._
 
@@ -62,10 +58,10 @@ final class VectorMap[K, +V] private (
     }
   }
 
-  override def withDefault[V1 >: V](d: K => V1): Map.WithDefault[K, V1] =
+  override def withDefault[V1 >: V](d: K => V1): Map[K, V1] =
     new Map.WithDefault(this, d)
 
-  override def withDefaultValue[V1 >: V](d: V1): Map.WithDefault[K, V1] =
+  override def withDefaultValue[V1 >: V](d: V1): Map[K, V1] =
     new Map.WithDefault[K, V1](this, _ => d)
 
   def get(key: K): Option[V] = underlying.get(key) match {
@@ -80,8 +76,8 @@ final class VectorMap[K, +V] private (
         (-1, null.asInstanceOf[K])
       case Tombstone.NextOfKin(distance) =>
         field(slot + distance)
-      case k: K =>
-        (slot, k)
+      case k =>
+        (slot, k.asInstanceOf[K])
     }
   }
 
@@ -97,10 +93,10 @@ final class VectorMap[K, +V] private (
         key = null.asInstanceOf[K]
       } else {
         field(nextSlot) match {
-          case (-1, _) ⇒
+          case (-1, _) =>
             slot = fieldsLength
             key = null.asInstanceOf[K]
-          case (s, k) ⇒
+          case (s, k) =>
             slot = s
             key = k
         }
@@ -119,12 +115,23 @@ final class VectorMap[K, +V] private (
     }
   }
 
-  def remove(key: K): VectorMap[K, V] = {
+  // No-Op overrides to allow for more efficient steppers in a minor release.
+  // Refining the return type to `S with EfficientSplit` is binary compatible.
+
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[(K, V), S]): S = super.stepper(shape)
+
+  override def keyStepper[S <: Stepper[_]](implicit shape: StepperShape[K, S]): S = super.keyStepper(shape)
+
+  override def valueStepper[S <: Stepper[_]](implicit shape: StepperShape[V, S]): S = super.valueStepper(shape)
+
+
+  def removed(key: K): VectorMap[K, V] = {
     if (isEmpty) empty
     else {
       var fs = fields
       val sz = fs.size
       underlying.get(key) match {
+        case Some(_) if size == 1 => empty
         case Some((slot, _)) =>
           val s = field(slot)._1
           // Calculate distance to next of kin
@@ -176,7 +183,7 @@ final class VectorMap[K, +V] private (
     fields
       .reverseIterator
       .find(!_.isInstanceOf[Tombstone])
-      .map { f ⇒
+      .map { f =>
         val last = f.asInstanceOf[K]
         (last, underlying(last)._2)
       }
@@ -188,25 +195,25 @@ final class VectorMap[K, +V] private (
   }
 
   override def init: VectorMap[K, V] = {
-    val (slot, key) = field(size - 1)
-    new VectorMap(fields.dropRight(size - 1 - slot + 1), underlying - key, false)
+    val lastSlot = size - 1
+    val (slot, key) = field(lastSlot)
+    new VectorMap(fields.dropRight(slot - lastSlot + 1), underlying - key, false)
   }
 
-  def keyIterator: Iterator[K] = iterator.map(_._1)
-  override def keys: Vector[K] = keyIterator.toVector
+  override def keys: Vector[K] = keysIterator.toVector
 
-  override def values: Iterable[V] = new Iterable[V] {
-    override def iterator: Iterator[V] = keyIterator.map(underlying(_)._2)
+  override def values: Iterable[V] = new Iterable[V] with IterableFactoryDefaults[V, Iterable] {
+    override def iterator: Iterator[V] = keysIterator.map(underlying(_)._2)
   }
 }
 
 object VectorMap extends MapFactory[VectorMap] {
   private[VectorMap] sealed trait Tombstone
   private[VectorMap] object Tombstone {
-    final case object Kinless extends Tombstone {
+    case object Kinless extends Tombstone {
       override def toString = "⤞"
     }
-    final case class NextOfKin private (distance: Int) extends Tombstone {
+    final case class NextOfKin private[Tombstone] (distance: Int) extends Tombstone {
       override def toString = "⥅" + distance
     }
     def apply(distance: Int): Tombstone =
@@ -214,10 +221,10 @@ object VectorMap extends MapFactory[VectorMap] {
       else NextOfKin(distance)
   }
 
-  def empty[K, V]: VectorMap[K, V] =
-    new VectorMap[K, V](
-      Vector.empty[K],
-      HashMap.empty[K, (Int, V)])
+  private[this] final val EmptyMap: VectorMap[Nothing, Nothing] =
+    new VectorMap[Nothing, Nothing](Vector.empty[Nothing], HashMap.empty[Nothing, (Int, Nothing)])
+
+  def empty[K, V]: VectorMap[K, V] = EmptyMap.asInstanceOf[VectorMap[K, V]]
 
   def from[K, V](it: collection.IterableOnce[(K, V)]): VectorMap[K, V] =
     it match {
@@ -225,9 +232,41 @@ object VectorMap extends MapFactory[VectorMap] {
       case _                   => (newBuilder[K, V] ++= it).result()
     }
 
-  def newBuilder[K, V]: mutable.Builder[(K, V), VectorMap[K, V]] =
-    new mutable.ImmutableBuilder[(K, V), VectorMap[K, V]](empty) {
-      def addOne(elem: (K, V)): this.type = { elems = elems + elem; this }
-    }
+  def newBuilder[K, V]: mutable.Builder[(K, V), VectorMap[K, V]] = new VectorMapBuilder[K, V]
+}
 
+private[immutable] final class VectorMapBuilder[K, V] extends mutable.Builder[(K, V), VectorMap[K, V]] {
+  private[this] val vectorBuilder = new VectorBuilder[K]
+  private[this] val mapBuilder = new MapBuilderImpl[K, (Int, V)]
+  private[this] var aliased: VectorMap[K, V] = _
+
+  override def clear(): Unit = {
+    vectorBuilder.clear()
+    mapBuilder.clear()
+    aliased = null
+  }
+
+  override def result(): VectorMap[K, V] = {
+    if (aliased eq null) {
+        aliased = new VectorMap(vectorBuilder.result(), mapBuilder.result())
+    }
+    aliased
+  }
+  def addOne(key: K, value: V): this.type = {
+    if (aliased ne null) {
+      aliased = aliased.updated(key, value)
+    } else {
+      mapBuilder.getOrElse(key, null) match {
+        case (slot, _) =>
+          mapBuilder.addOne(key, (slot, value))
+        case null =>
+          val vectorSize = vectorBuilder.size
+          vectorBuilder.addOne(key)
+          mapBuilder.addOne(key, (vectorSize, value))
+      }
+    }
+    this
+  }
+
+  override def addOne(elem: (K, V)): this.type = addOne(elem._1, elem._2)
 }

@@ -211,16 +211,20 @@ trait MemberHandlers {
       importableMembers(exitingTyper(targetType)).filterNot(isFlattenedSymbol).toList
 
     // non-wildcard imports
-    private def individualSelectors = selectors filter analyzer.isIndividualImport
+    private def individualSelectors = selectors.filter(_.isSpecific)
 
     /** Whether this import includes a wildcard import */
-    val importsWildcard = selectors exists analyzer.isWildcardImport
+    val importsWildcard = selectors.exists(_.isWildcard)
 
     def implicitSymbols = importedSymbols filter (_.isImplicit)
     def importedSymbols = individualSymbols ++ wildcardSymbols
 
     lazy val importableSymbolsWithRenames = {
-      val selectorRenameMap = individualSelectors.flatMap(x => x.name.bothNames zip x.rename.bothNames).toMap
+      val selectorRenameMap: mutable.HashMap[Name, Name] = mutable.HashMap.empty[Name, Name]
+      individualSelectors foreach { x =>
+        selectorRenameMap.put(x.name.toTermName, x.rename.toTermName)
+        selectorRenameMap.put(x.name.toTypeName, x.rename.toTypeName)
+      }
       importableTargetMembers flatMap (m => selectorRenameMap.get(m.name) map (m -> _))
     }
 

@@ -16,9 +16,10 @@ package scala
 package reflect
 package internal
 
-import java.io.{ OutputStream, PrintWriter, Writer }
+import java.io.{OutputStream, PrintWriter, Writer}
 import Flags._
 import java.lang.System.{lineSeparator => EOL}
+import scala.annotation.tailrec
 
 trait Printers extends api.Printers { self: SymbolTable =>
 
@@ -256,20 +257,18 @@ trait Printers extends api.Printers { self: SymbolTable =>
 
     protected def printImport(tree: Import, resSelect: => String) = {
       val Import(expr, selectors) = tree
-      // Is this selector renaming a name (i.e, {name1 => name2})
-      def isNotRename(s: ImportSelector): Boolean =
-        s.name == nme.WILDCARD || s.name == s.rename
 
       def selectorToString(s: ImportSelector): String = {
-        val from = quotedName(s.name)
-        if (isNotRename(s)) from
-        else from + "=>" + quotedName(s.rename)
+        def selectorName(n: Name): String = if (s.isWildcard) nme.WILDCARD.decoded else quotedName(n)
+        val from = selectorName(s.name)
+        if (s.isRename || s.isMask) from + "=>" + selectorName(s.rename)
+        else from
       }
       print("import ", resSelect, ".")
       selectors match {
         case List(s) =>
           // If there is just one selector and it is not renaming a name, no braces are needed
-          if (isNotRename(s)) print(selectorToString(s))
+          if (!s.isRename) print(selectorToString(s))
           else print("{", selectorToString(s), "}")
         // If there is more than one selector braces are always needed
         case many =>
@@ -280,7 +279,7 @@ trait Printers extends api.Printers { self: SymbolTable =>
     protected def printCaseDef(tree: CaseDef) = {
       val CaseDef(pat, guard, body) = tree
       print("case ")
-      def patConstr(pat: Tree): Tree = pat match {
+      @tailrec def patConstr(pat: Tree): Tree = pat match {
         case Apply(fn, args) => patConstr(fn)
         case _ => pat
       }
@@ -310,6 +309,11 @@ trait Printers extends api.Printers { self: SymbolTable =>
       if (qual.nonEmpty || (checkSymbol && tree.symbol != NoSymbol)) print(resultName + ".")
       print("super")
       if (mix.nonEmpty) print(s"[$mix]")
+      else if (settings.debug) tree.tpe match {
+        case st: SuperType => print(s"[${st.supertpe}]")
+        case tp: Type => print(s"[$tp]")
+        case _ =>
+      }
     }
 
     protected def printThis(tree: This, resultName: => String) = {
@@ -626,6 +630,7 @@ trait Printers extends api.Printers { self: SymbolTable =>
     val defaultClasses = List(tpnme.AnyRef, tpnme.Object)
     val defaultTraitsForCase = List(tpnme.Product, tpnme.Serializable)
     protected def removeDefaultTypesFromList(trees: List[Tree])(classesToRemove: List[Name] = defaultClasses)(traitsToRemove: List[Name]) = {
+      @tailrec
       def removeDefaultTraitsFromList(trees: List[Tree], traitsToRemove: List[Name]): List[Tree] =
         trees match {
           case Nil => trees
@@ -1025,6 +1030,7 @@ trait Printers extends api.Printers { self: SymbolTable =>
           print(qual)
 
         case Select(qual, name) =>
+          @tailrec
           def checkRootPackage(tr: Tree): Boolean =
             (currentParent match { //check that Select is not for package def name
               case Some(_: PackageDef) => false

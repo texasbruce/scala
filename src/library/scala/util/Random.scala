@@ -13,16 +13,12 @@
 package scala
 package util
 
-import scala.annotation.migration
+import scala.annotation.{migration, tailrec}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.BuildFrom
 import scala.collection.immutable.{ List, LazyList }
 import scala.language.{implicitConversions, higherKinds}
 
-/**
- *  @author Stephane Micheloud
- *
- */
 class Random(val self: java.util.Random) extends AnyRef with Serializable {
   /** Creates a new random number generator using a single long seed. */
   def this(seed: Long) = this(new java.util.Random(seed))
@@ -113,6 +109,7 @@ class Random(val self: java.util.Random) extends AnyRef with Serializable {
       /* The interval size here is greater than Int.MaxValue,
        * so the loop will exit with a probability of at least 1/2.
        */
+      @tailrec
       def loop(): Int = {
         val n = nextInt()
         if (n >= minInclusive && n < maxExclusive) n
@@ -172,6 +169,7 @@ class Random(val self: java.util.Random) extends AnyRef with Serializable {
       /* The interval size here is greater than Long.MaxValue,
        * so the loop will exit with a probability of at least 1/2.
        */
+      @tailrec
       def loop(): Long = {
         val n = nextLong()
         if (n >= minInclusive && n < maxExclusive) n
@@ -215,7 +213,7 @@ class Random(val self: java.util.Random) extends AnyRef with Serializable {
    *
    *  @return         the shuffled collection
    */
-  def shuffle[T, CC[X] <: IterableOnce[X]](xs: CC[T])(implicit bf: BuildFrom[CC[T], T, CC[T]]): CC[T] = {
+  def shuffle[T, C](xs: IterableOnce[T])(implicit bf: BuildFrom[xs.type, T, C]): C = {
     val buf = new ArrayBuffer[T] ++= xs
 
     def swap(i1: Int, i2: Int): Unit = {
@@ -234,8 +232,6 @@ class Random(val self: java.util.Random) extends AnyRef with Serializable {
 
   /** Returns a LazyList of pseudorandomly chosen alphanumeric characters,
    *  equally chosen from A-Z, a-z, and 0-9.
-   *
-   *  @since 2.8
    */
   @migration("`alphanumeric` returns a LazyList instead of a Stream", "2.13.0")
   def alphanumeric: LazyList[Char] = {
@@ -251,8 +247,6 @@ class Random(val self: java.util.Random) extends AnyRef with Serializable {
 
 /** The object `Random` offers a default implementation
  *  of scala.util.Random and random-related convenience methods.
- *
- *  @since 2.8
  */
 object Random extends Random {
 

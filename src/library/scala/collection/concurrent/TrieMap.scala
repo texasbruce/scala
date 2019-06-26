@@ -18,6 +18,7 @@ import java.io.{ObjectInputStream, ObjectOutputStream}
 import java.util.concurrent.atomic._
 
 import scala.annotation.tailrec
+import scala.collection.generic.DefaultSerializable
 import scala.collection.immutable.{List, Nil}
 import scala.collection.mutable.GrowableBuilder
 import scala.util.hashing.Hashing
@@ -121,7 +122,7 @@ private[collection] final class INode[K, V](bn: MainNode[K, V], g: Gen, equiv: E
                 else false
               }
             case sn: SNode[K, V] =>
-              if (sn.hc == hc && equal(sn.k, k, ct)) GCAS(cn, cn.updatedAt(pos, new SNode(k, v, hc), gen), ct)
+              if (sn.hc == hc && equal(sn.k, k, ct)) GCAS(cn, cn.updatedAt(pos, new SNode(sn.k, v, hc), gen), ct)
               else {
                 val rn = if (cn.gen eq gen) cn else cn.renewed(gen, ct)
                 val nn = rn.updatedAt(pos, inode(CNode.dual(sn, sn.hc, new SNode(k, v, hc), hc, lev + 5, gen, equiv)), gen)
@@ -130,7 +131,7 @@ private[collection] final class INode[K, V](bn: MainNode[K, V], g: Gen, equiv: E
           }
         } else {
           val rn = if (cn.gen eq gen) cn else cn.renewed(gen, ct)
-          val ncnode = rn.insertedAt(pos, flag, new SNode(k, v, hc), gen)
+          val ncnode = rn.insertedAt(pos, flag, k, v, hc, gen)
           GCAS(cn, ncnode, ct)
         }
       case tn: TNode[K, V] =>
@@ -176,7 +177,7 @@ private[collection] final class INode[K, V](bn: MainNode[K, V], g: Gen, equiv: E
             case sn: SNode[K, V] => cond match {
               case INode.KEY_PRESENT_OR_ABSENT =>
                 if (sn.hc == hc && equal(sn.k, k, ct)) {
-                  if (GCAS(cn, cn.updatedAt(pos, new SNode(k, v, hc), gen), ct)) Some(sn.v) else null
+                  if (GCAS(cn, cn.updatedAt(pos, new SNode(sn.k, v, hc), gen), ct)) Some(sn.v) else null
                 } else {
                   val rn = if (cn.gen eq gen) cn else cn.renewed(gen, ct)
                   val nn = rn.updatedAt(pos, inode(CNode.dual(sn, sn.hc, new SNode(k, v, hc), hc, lev + 5, gen, equiv)), gen)
@@ -204,7 +205,7 @@ private[collection] final class INode[K, V](bn: MainNode[K, V], g: Gen, equiv: E
         } else cond match {
           case INode.KEY_PRESENT_OR_ABSENT | INode.KEY_ABSENT =>
             val rn = if (cn.gen eq gen) cn else cn.renewed(gen, ct)
-            val ncnode = rn.insertedAt(pos, flag, new SNode(k, v, hc), gen)
+            val ncnode = rn.insertedAt(pos, flag, k, v, hc, gen)
             if (GCAS(cn, ncnode, ct)) None else null
           case INode.KEY_PRESENT => None
           case otherv => None
@@ -467,7 +468,19 @@ private[collection] final class LNode[K, V](val entries: List[(K, V)], equiv: Eq
   def this(k1: K, v1: V, k2: K, v2: V, equiv: Equiv[K]) =
     this(if (equiv.equiv(k1, k2)) (k2 -> v2) :: Nil else (k1 -> v1) :: (k2 -> v2) :: Nil, equiv)
 
-  def inserted(k: K, v: V) = new LNode((k -> v) :: entries.filterNot(entry => equiv.equiv(entry._1, k)), equiv)
+  def inserted(k: K, v: V) = {
+    var k0: K = k
+    @tailrec
+    def remove(elems: List[(K, V)], acc: List[(K, V)]): List[(K, V)] = {
+      if (elems.isEmpty) acc
+      else if (equiv.equiv(elems.head._1, k)) {
+        k0 = elems.head._1
+        acc ::: elems.tail
+      } else remove(elems.tail, elems.head :: acc)
+    }
+    val e = remove(entries, Nil)
+    new LNode((k0 -> v) :: e, equiv)
+  }
 
   def removed(k: K, ct: TrieMap[K, V]): MainNode[K, V] = {
     val updmap = entries.filterNot(entry => equiv.equiv(entry._1, k))
@@ -540,12 +553,12 @@ private[collection] final class CNode[K, V](val bitmap: Int, val array: Array[Ba
     new CNode[K, V](bitmap ^ flag, narr, gen)
   }
 
-  def insertedAt(pos: Int, flag: Int, nn: BasicNode, gen: Gen) = {
+  def insertedAt(pos: Int, flag: Int, k: K, v: V, hc: Int, gen: Gen) = {
     val len = array.length
     val bmp = bitmap
     val narr = new Array[BasicNode](len + 1)
     Array.copy(array, 0, narr, 0, pos)
-    narr(pos) = nn
+    narr(pos) = new SNode(k, v, hc)
     Array.copy(array, pos, narr, pos + 1, len - pos)
     new CNode[K, V](bmp | flag, narr, gen)
   }
@@ -664,17 +677,17 @@ private[concurrent] case class RDCSS_Descriptor[K, V](old: INode[K, V], expected
   *  distributed across subsequent updates, thus making snapshot evaluation horizontally scalable.
   *
   *  For details, see: [[http://lampwww.epfl.ch/~prokopec/ctries-snapshot.pdf]]
-  *
-  *  @author Aleksandar Prokopec
-  *  @since 2.10
   */
 final class TrieMap[K, V] private (r: AnyRef, rtupd: AtomicReferenceFieldUpdater[TrieMap[K, V], AnyRef], hashf: Hashing[K], ef: Equiv[K])
   extends scala.collection.mutable.AbstractMap[K, V]
     with scala.collection.concurrent.Map[K, V]
-    with scala.collection.mutable.MapOps[K, V, TrieMap, TrieMap[K, V]] {
+    with scala.collection.mutable.MapOps[K, V, TrieMap, TrieMap[K, V]]
+    with scala.collection.MapFactoryDefaults[K, V, TrieMap, mutable.Iterable]
+    with DefaultSerializable {
 
   private[this] var hashingobj = if (hashf.isInstanceOf[Hashing.Default[_]]) new TrieMap.MangledHashing[K] else hashf
   private[this] var equalityobj = ef
+  @transient
   private[this] var rootupdater = rtupd
   def hashing = hashingobj
   def equality = equalityobj
@@ -815,8 +828,6 @@ final class TrieMap[K, V] private (r: AnyRef, rtupd: AtomicReferenceFieldUpdater
 
   /* public methods */
 
-  override def empty: TrieMap[K, V] = new TrieMap[K, V]
-
   def isReadOnly = rootupdater eq null
 
   def nonReadOnly = rootupdater ne null
@@ -931,7 +942,7 @@ final class TrieMap[K, V] private (r: AnyRef, rtupd: AtomicReferenceFieldUpdater
     *  @param op     the expression that computes the value
     *  @return       the newly added value
     */
-  override def getOrElseUpdate(k: K, op: =>V): V = {
+  override def getOrElseUpdate(k: K, op: => V): V = {
     val hc = computeHash(k)
     lookuphc(k, hc) match {
       case INodeBase.NO_SUCH_ELEMENT_SENTINEL =>
@@ -1014,6 +1025,7 @@ object TrieMap extends MapFactory[TrieMap] {
 
   def newBuilder[K, V] = new GrowableBuilder(empty[K, V])
 
+  @transient
   val inodeupdater = AtomicReferenceFieldUpdater.newUpdater(classOf[INodeBase[_, _]], classOf[MainNode[_, _]], "mainnode")
 
   class MangledHashing[K] extends Hashing[K] {
@@ -1021,7 +1033,7 @@ object TrieMap extends MapFactory[TrieMap] {
   }
 }
 
-
+// non-final as an extension point for parallel collections
 private[collection] class TrieMapIterator[K, V](var level: Int, private var ct: TrieMap[K, V], mustInit: Boolean = true) extends AbstractIterator[(K, V)] {
   private val stack = new Array[Array[BasicNode]](7)
   private val stackpos = new Array[Int](7)
@@ -1072,7 +1084,8 @@ private[collection] class TrieMapIterator[K, V](var level: Int, private var ct: 
     readin(r)
   }
 
-  def advance(): Unit = if (depth >= 0) {
+  @tailrec
+  final def advance(): Unit = if (depth >= 0) {
     val npos = stackpos(depth) + 1
     if (npos < stack(depth).length) {
       stackpos(depth) = npos

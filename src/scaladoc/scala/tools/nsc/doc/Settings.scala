@@ -14,7 +14,6 @@ package scala.tools.nsc
 package doc
 
 import java.io.File
-import scala.language.postfixOps
 
 /** An extended version of compiler settings, with additional Scaladoc-specific options.
   * @param error A function that prints a string to the appropriate error stream
@@ -68,7 +67,7 @@ class Settings(error: String => Unit, val printMsg: String => Unit = println(_))
 
   lazy val uncompilableFiles = docUncompilable.value match {
     case ""     => Nil
-    case path   => io.Directory(path).deepFiles filter (_ hasExtension "scala") toList
+    case path   => io.Directory(path).deepFiles.filter(_ hasExtension "scala").toList
   }
 
   /** A setting that defines a URL to be concatenated with source locations and show a link to source files.
@@ -76,7 +75,7 @@ class Settings(error: String => Unit, val printMsg: String => Unit = println(_))
   val docsourceurl = StringSetting (
     "-doc-source-url",
     "url",
-    s"A URL pattern used to link to the source file; the following variables are available: €{TPL_NAME}, €{TPL_OWNER} and respectively €{FILE_PATH}. For example, for `scala.collection.Seq`, the variables will be expanded to `Seq`, `scala.collection` and respectively `scala/collection/Seq` (without the backquotes). To obtain a relative path for €{FILE_PATH} instead of an absolute one, use the ${sourcepath.name} setting.",
+    s"A URL pattern used to link to the source file, with some variables supported: For example, for `scala.collection.Seq` €{TPL_NAME} gives `Seq`, €{TPL_OWNER} gives `scala.collection`, €{FILE_PATH} gives `scala/collection/Seq`, €{FILE_EXT} gives `.scala`, €{FILE_PATH_EXT} gives `scala/collection/Seq.scala`, and €{FILE_LINE} gives `25` (without the backquotes). To obtain a relative path for €{FILE_PATH} and €{FILE_PATH_EXT} instead of an absolute one, use the ${sourcepath.name} setting.",
     ""
   )
 
@@ -220,6 +219,13 @@ class Settings(error: String => Unit, val printMsg: String => Unit = println(_))
     "Prevents parsing and inclusion of comments from java sources."
   )
 
+  val docCanonicalBaseUrl = StringSetting (
+    "-doc-canonical-base-url",
+    "url",
+    s"A base URL to use as prefix and add `canonical` URLs to all pages. The canonical URL may be used by search engines to choose the URL that you want people to see in search results. If unset no canonical URLs are generated.",
+    ""
+  )
+
   // For improved help output.
   def scaladocSpecific = Set[Settings#Setting](
     docformat, doctitle, docfooter, docversion, docUncompilable, docsourceurl, docgenerator, docRootContent,
@@ -257,7 +263,7 @@ class Settings(error: String => Unit, val printMsg: String => Unit = println(_))
 
   def stripIndex(url: String): String = url.stripSuffix("index.html").stripSuffix("/") + "/"
 
-  lazy val extUrlMapping: Map[String, String] = docExternalDoc.value flatMap { s =>
+  lazy val extUrlMapping: Map[String, String] = docExternalDoc.value.flatMap { s =>
     val idx = s.indexOf("#")
     if (idx > 0) {
       val (first, last) = s.splitAt(idx)
@@ -266,7 +272,7 @@ class Settings(error: String => Unit, val printMsg: String => Unit = println(_))
       error(s"Illegal -doc-external-doc option; expected a pair with '#' separator, found: '$s'")
       None
     }
-  } toMap
+  }.toMap
 
   /**
    *  This is the hardcoded area of Scaladoc. This is where "undesirable" stuff gets eliminated. I know it's not pretty,

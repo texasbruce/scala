@@ -33,7 +33,7 @@ trait Validators {
 
     private def sanityCheck() = {
       if (!macroImpl.isMethod) MacroImplReferenceWrongShapeError()
-      if (macroImpl.typeParams.length != targs.length) MacroImplWrongNumberOfTypeArgumentsError()
+      if (macroImpl.typeParams.sizeCompare(targs) != 0) MacroImplWrongNumberOfTypeArgumentsError()
       if (!macroImpl.isPublic) MacroImplNotPublicError()
       if (macroImpl.isOverloaded) MacroImplOverloadedError()
       val implicitParams = aparamss.flatten filter (_.isImplicit)
@@ -50,10 +50,10 @@ trait Validators {
 
       // we only check strict correspondence between value parameterss
       // type parameters of macro defs and macro impls don't have to coincide with each other
-      if (aparamss.length != rparamss.length) MacroImplParamssMismatchError()
+      if (aparamss.sizeCompare(rparamss) != 0) MacroImplParamssMismatchError()
       map2(aparamss, rparamss)((aparams, rparams) => {
-        if (aparams.length < rparams.length) MacroImplMissingParamsError(aparams, rparams)
-        if (rparams.length < aparams.length) MacroImplExtraParamsError(aparams, rparams)
+        if (aparams.sizeCompare(rparams) < 0) MacroImplMissingParamsError(aparams, rparams)
+        if (rparams.sizeCompare(aparams) < 0) MacroImplExtraParamsError(aparams, rparams)
       })
 
       try {
@@ -72,7 +72,7 @@ trait Validators {
         checkMacroImplResultTypeMismatch(atpeToRtpe(aret), rret)
 
         val maxLubDepth = lubDepth(aparamss.flatten map (_.tpe)) max lubDepth(rparamss.flatten map (_.tpe))
-        val atargs = solvedTypes(atvars, atparams, atparams map varianceInType(aret), upper = false, maxLubDepth)
+        val atargs = solvedTypes(atvars, atparams, varianceInType(aret), upper = false, maxLubDepth)
         val boundsOk = typer.silent(_.infer.checkBounds(macroDdef, NoPrefix, NoSymbol, atparams, atargs, ""))
         boundsOk match {
           case SilentResultValue(true) => // do nothing, success

@@ -78,8 +78,9 @@ trait BaseTypeSeqs {
         throw CyclicInheritance
       } else {
         def computeLazyType(rtp: RefinedType): Type = {
-          if (!isIntersectionTypeForLazyBaseType(rtp))
-            devWarning("unexpected RefinedType in base type seq, lazy BTS elements should be created via intersectionTypeForLazyBaseType: " + rtp)
+          devWarningIf(!isIntersectionTypeForLazyBaseType(rtp)) {
+            "unexpected RefinedType in base type seq, lazy BTS elements should be created via intersectionTypeForLazyBaseType: " + rtp
+          }
           val variants = rtp.parents
           // can't assert decls.isEmpty; see t0764
           //if (!decls.isEmpty) abort("computing closure of "+this+":"+this.isInstanceOf[RefinedType]+"/"+closureCache(j))
@@ -128,6 +129,9 @@ trait BaseTypeSeqs {
 
     /** Return all evaluated types in this sequence as a list */
     def toList: List[Type] = elems.toList
+
+    /** Return an iterator over all evaluated types in this sequence */
+    def toIterator: Iterator[Type] = elems.iterator
 
     def copy(head: Type, offset: Int): BaseTypeSeq = {
       val arr = new Array[Type](elems.length + offset)

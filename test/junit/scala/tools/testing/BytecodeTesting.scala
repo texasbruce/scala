@@ -1,4 +1,4 @@
-package scala.tools.testing
+package scala.tools.testkit
 
 import junit.framework.AssertionFailedError
 import org.junit.Assert._
@@ -6,7 +6,7 @@ import org.junit.Assert._
 import scala.collection.JavaConverters._
 import scala.collection.generic.Clearable
 import scala.collection.mutable.ListBuffer
-import scala.reflect.internal.util.BatchSourceFile
+import scala.reflect.internal.util.{BatchSourceFile, NoPosition}
 import scala.reflect.io.VirtualDirectory
 import scala.tools.asm.Opcodes
 import scala.tools.asm.tree.{AbstractInsnNode, ClassNode, MethodNode}
@@ -17,7 +17,7 @@ import scala.tools.nsc.backend.jvm.opt.BytecodeUtils
 import scala.tools.nsc.io.AbstractFile
 import scala.tools.nsc.reporters.StoreReporter
 import scala.tools.nsc.{Global, Settings}
-import scala.tools.partest.ASMConverters._
+import scala.tools.testkit.ASMConverters._
 
 trait BytecodeTesting extends ClearAfterClass {
   /**

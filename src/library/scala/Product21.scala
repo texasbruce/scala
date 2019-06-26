@@ -20,13 +20,12 @@ object Product21 {
 }
 
 /** Product21 is a Cartesian product of 21 components.
- *  @since 2.3
  */
 trait Product21[+T1, +T2, +T3, +T4, +T5, +T6, +T7, +T8, +T9, +T10, +T11, +T12, +T13, +T14, +T15, +T16, +T17, +T18, +T19, +T20, +T21] extends Any with Product {
   /** The arity of this product.
    *  @return 21
    */
-  override def productArity = 21
+  override def productArity: Int = 21
 
   
   /** Returns the n-th projection of this product if 0 <= n < productArity,
@@ -34,11 +33,11 @@ trait Product21[+T1, +T2, +T3, +T4, +T5, +T6, +T7, +T8, +T9, +T10, +T11, +T12, +
    *
    *  @param n number of the projection to be returned
    *  @return  same as `._(n+1)`, for example `productElement(0)` is the same as `._1`.
-   *  @throws  IndexOutOfBoundsException
+   *  @throws  IndexOutOfBoundsException if the `n` is out of range(n < 0 || n >= 21).
    */
 
   @throws(classOf[IndexOutOfBoundsException])
-  override def productElement(n: Int) = n match { 
+  override def productElement(n: Int): Any = n match { 
     case 0 => _1
     case 1 => _2
     case 2 => _3
@@ -60,7 +59,7 @@ trait Product21[+T1, +T2, +T3, +T4, +T5, +T6, +T7, +T8, +T9, +T10, +T11, +T12, +
     case 18 => _19
     case 19 => _20
     case 20 => _21
-    case _ => throw new IndexOutOfBoundsException(n.toString())
+    case _ => throw new IndexOutOfBoundsException(s"$n is out of bounds (min 0, max 20)")
  }
 
   /** A projection of element 1 of this Product.

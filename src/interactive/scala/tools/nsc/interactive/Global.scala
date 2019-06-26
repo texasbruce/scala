@@ -13,9 +13,10 @@
 package scala.tools.nsc
 package interactive
 
-import java.io.{ FileReader, FileWriter }
+import java.io.{FileReader, FileWriter}
+
 import scala.collection.mutable
-import mutable.{LinkedHashMap, HashSet}
+import mutable.{HashSet, LinkedHashMap}
 import scala.util.control.ControlThrowable
 import scala.tools.nsc.io.AbstractFile
 import scala.reflect.internal.Reporter
@@ -23,12 +24,13 @@ import scala.reflect.internal.util.SourceFile
 import scala.tools.nsc.symtab._
 import scala.tools.nsc.typechecker.Analyzer
 import symtab.Flags.{ACCESSOR, PARAMACCESSOR}
-import scala.annotation.{ elidable, tailrec }
+import scala.annotation.{elidable, tailrec}
 import scala.language.implicitConversions
 import scala.tools.nsc.typechecker.Typers
 import scala.util.control.Breaks._
 import java.util.concurrent.ConcurrentHashMap
-import scala.collection.JavaConverters.mapAsScalaMapConverter
+
+import scala.jdk.javaapi.CollectionConverters
 import scala.reflect.internal.Chars.isIdentifierStart
 
 /**
@@ -164,23 +166,25 @@ class Global(settings: Settings, _reporter: Reporter, projectName: String = "") 
   // (the map will grow indefinitely, and the only use case is the backend)
   override def defineOriginalOwner(sym: Symbol, owner: Symbol): Unit = { }
 
-  override def forInteractive = true
   override protected def synchronizeNames = true
 
   /** A map of all loaded files to the rich compilation units that correspond to them.
    */
-  val unitOfFile = mapAsScalaMapConverter(new ConcurrentHashMap[AbstractFile, RichCompilationUnit] {
-    override def put(key: AbstractFile, value: RichCompilationUnit) = {
-      val r = super.put(key, value)
-      if (r == null) debugLog("added unit for "+key)
-      r
+  val unitOfFile: mutable.Map[AbstractFile, RichCompilationUnit] = {
+    val m = new ConcurrentHashMap[AbstractFile, RichCompilationUnit] {
+      override def put(key: AbstractFile, value: RichCompilationUnit) = {
+        val r = super.put(key, value)
+        if (r == null) debugLog("added unit for "+key)
+        r
+      }
+      override def remove(key: Any) = {
+        val r = super.remove(key)
+        if (r != null) debugLog("removed unit for "+key)
+        r
+      }
     }
-    override def remove(key: Any) = {
-      val r = super.remove(key)
-      if (r != null) debugLog("removed unit for "+key)
-      r
-    }
-  }).asScala
+    CollectionConverters.asScala(m)
+  }
 
   /** A set containing all those files that need to be removed
    *  Units are removed by getUnit, typically once a unit is finished compiled.

@@ -10,20 +10,18 @@
  * additional information regarding copyright ownership.
  */
 
-package scala
-package collection.immutable
+package scala.collection
+package immutable
 
-import java.io.{ObjectInputStream, ObjectOutputStream}
+import java.util.Arrays
 
-import scala.collection.mutable.{ArrayBuffer, ArrayBuilder, Builder, ArraySeq => MutableArraySeq}
-import scala.collection.{ArrayOps, ClassTagSeqFactory, SeqFactory, StrictOptimizedClassTagSeqFactory}
-import scala.collection.IterableOnce
 import scala.annotation.unchecked.uncheckedVariance
-import scala.util.Sorting
-import scala.util.hashing.MurmurHash3
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.mutable.{ArrayBuffer, ArrayBuilder, Builder, ArraySeq => MutableArraySeq}
 import scala.reflect.ClassTag
 import scala.runtime.ScalaRunTime
-import java.util.Arrays
+import scala.util.Sorting
+import scala.util.hashing.MurmurHash3
 
 /**
   * An immutable array.
@@ -37,7 +35,9 @@ sealed abstract class ArraySeq[+A]
   extends AbstractSeq[A]
     with IndexedSeq[A]
     with IndexedSeqOps[A, ArraySeq, ArraySeq[A]]
-    with StrictOptimizedSeqOps[A, ArraySeq, ArraySeq[A]] {
+    with StrictOptimizedSeqOps[A, ArraySeq, ArraySeq[A]]
+    with EvidenceIterableFactoryDefaults[A, ArraySeq, ClassTag]
+    with Serializable {
 
   /** The tag of the element type. This does not have to be equal to the element type of this ArraySeq. A primitive
     * ArraySeq can be backed by an array of boxed values and a reference ArraySeq can be backed by an array of a supertype
@@ -52,9 +52,36 @@ sealed abstract class ArraySeq[+A]
     * array of a supertype or subtype of the element type. */
   def unsafeArray: Array[_]
 
-  override protected def fromSpecific(coll: scala.collection.IterableOnce[A] @uncheckedVariance): ArraySeq[A] = ArraySeq.from(coll)(elemTag.asInstanceOf[ClassTag[A]])
+  protected def evidenceIterableFactory: ArraySeq.type = ArraySeq
+  protected def iterableEvidence: ClassTag[A @uncheckedVariance] = elemTag.asInstanceOf[ClassTag[A]]
 
-  override protected def newSpecificBuilder: Builder[A, ArraySeq[A]] @uncheckedVariance = ArraySeq.newBuilder[A](elemTag.asInstanceOf[ClassTag[A]])
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[A, S]): S with EfficientSplit = {
+    import scala.collection.convert.impl._
+    val isRefShape = shape.shape == StepperShape.ReferenceShape
+    val s = if (isRefShape) unsafeArray match {
+      case a: Array[Int]     => AnyStepper.ofParIntStepper   (new IntArrayStepper(a, 0, a.length))
+      case a: Array[Long]    => AnyStepper.ofParLongStepper  (new LongArrayStepper(a, 0, a.length))
+      case a: Array[Double]  => AnyStepper.ofParDoubleStepper(new DoubleArrayStepper(a, 0, a.length))
+      case a: Array[Byte]    => AnyStepper.ofParIntStepper   (new WidenedByteArrayStepper(a, 0, a.length))
+      case a: Array[Short]   => AnyStepper.ofParIntStepper   (new WidenedShortArrayStepper(a, 0, a.length))
+      case a: Array[Char]    => AnyStepper.ofParIntStepper   (new WidenedCharArrayStepper(a, 0, a.length))
+      case a: Array[Float]   => AnyStepper.ofParDoubleStepper(new WidenedFloatArrayStepper(a, 0, a.length))
+      case a: Array[Boolean] => new BoxedBooleanArrayStepper(a, 0, a.length)
+      case a: Array[AnyRef]  => new ObjectArrayStepper(a, 0, a.length)
+    } else {
+      unsafeArray match {
+        case a: Array[AnyRef] => shape.parUnbox(new ObjectArrayStepper(a, 0, a.length).asInstanceOf[AnyStepper[A] with EfficientSplit])
+        case a: Array[Int]    => new IntArrayStepper(a, 0, a.length)
+        case a: Array[Long]   => new LongArrayStepper(a, 0, a.length)
+        case a: Array[Double] => new DoubleArrayStepper(a, 0, a.length)
+        case a: Array[Byte]   => new WidenedByteArrayStepper(a, 0, a.length)
+        case a: Array[Short]  => new WidenedShortArrayStepper(a, 0, a.length)
+        case a: Array[Char]   => new WidenedCharArrayStepper(a, 0, a.length)
+        case a: Array[Float]  => new WidenedFloatArrayStepper(a, 0, a.length)
+      }
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
 
   @throws[ArrayIndexOutOfBoundsException]
   def apply(i: Int): A
@@ -157,8 +184,6 @@ sealed abstract class ArraySeq[+A]
     copied
   }
 
-  override protected[this] def writeReplace(): AnyRef = this
-
   override protected final def applyPreferredMaxLength: Int = Int.MaxValue
 
   override def sorted[B >: A](implicit ord: Ordering[B]): ArraySeq[A] =
@@ -214,7 +239,7 @@ object ArraySeq extends StrictOptimizedClassTagSeqFactory[ArraySeq] { self =>
 
   /**
    * Wrap an existing `Array` into an `ArraySeq` of the proper primitive specialization type
-   * without copying.
+   * without copying. Any changes to wrapped array will break the expected immutability.
    *
    * Note that an array containing boxed primitives can be wrapped in an `ArraySeq` without
    * copying. For example, `val a: Array[Any] = Array(1)` is an array of `Object` at runtime,

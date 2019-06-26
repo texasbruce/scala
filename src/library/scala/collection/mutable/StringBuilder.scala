@@ -14,7 +14,7 @@ package scala.collection.mutable
 
 import java.lang.String
 
-import scala.collection.IterableOnce
+import scala.collection.{IterableFactoryDefaults, IterableOnce}
 import scala.collection.immutable.WrappedString
 
 import scala.Predef.{ // unimport char-related implicit conversions to avoid triggering them accidentally
@@ -27,23 +27,24 @@ import scala.Predef.{ // unimport char-related implicit conversions to avoid tri
 }
 
 /** A builder for mutable sequence of characters.  This class provides an API
-  *  mostly compatible with `java.lang.StringBuilder`, except where there are
-  *  conflicts with the Scala collections API (such as the `reverse` method.)
+  * mostly compatible with `java.lang.StringBuilder`, except where there are
+  * conflicts with the Scala collections API (such as the `reverse` method.)
   *
-  *  @author Stephane Micheloud
-  *  @author Martin Odersky
-  *  @since   2.7
-  *  @define Coll `mutable.IndexedSeq`
-  *  @define coll string builder
-  *  @see [[http://docs.scala-lang.org/overviews/collections/concrete-mutable-collection-classes.html#stringbuilders "Scala's Collection Library overview"]]
-  *  section on `StringBuilders` for more information.
+  * $multipleResults
+  *
+  * @define Coll `mutable.IndexedSeq`
+  * @define coll string builder
+  * @see [[http://docs.scala-lang.org/overviews/collections/concrete-mutable-collection-classes.html#stringbuilders "Scala's Collection Library overview"]]
+  * section on `StringBuilders` for more information.
   */
 @SerialVersionUID(3L)
 final class StringBuilder(val underlying: java.lang.StringBuilder) extends AbstractSeq[Char]
-  with Builder[Char, String]
+  with ReusableBuilder[Char, String]
   with IndexedSeq[Char]
   with IndexedSeqOps[Char, IndexedSeq, StringBuilder]
-  with java.lang.CharSequence {
+  with IterableFactoryDefaults[Char, IndexedSeq]
+  with java.lang.CharSequence
+  with Serializable {
 
   def this() = this(new java.lang.StringBuilder)
 
@@ -75,9 +76,13 @@ final class StringBuilder(val underlying: java.lang.StringBuilder) extends Abstr
   override protected def newSpecificBuilder: Builder[Char, StringBuilder] =
     new GrowableBuilder(new StringBuilder())
 
+  override def empty: StringBuilder = new StringBuilder()
+
   @inline def length: Int = underlying.length
 
   def length_=(n: Int): Unit = underlying.setLength(n)
+
+  override def knownSize: Int = super[IndexedSeqOps].knownSize
 
   def addOne(x: Char) = { underlying.append(x); this }
 
@@ -463,8 +468,6 @@ final class StringBuilder(val underlying: java.lang.StringBuilder) extends Abstr
    *  @return             the last applicable index where target occurs, or -1 if not found.
    */
   def lastIndexOf(str: String, fromIndex: Int): Int = underlying.lastIndexOf(str, fromIndex)
-
-  override protected[this] def writeReplace(): AnyRef = this
 }
 
 object StringBuilder {

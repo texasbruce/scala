@@ -13,8 +13,9 @@
 package scala
 package util
 
-import java.io.{ IOException, PrintWriter }
-import java.util.jar.Attributes.{ Name => AttributeName }
+import java.io.{IOException, PrintWriter}
+import java.util.jar.Attributes.{Name => AttributeName}
+import scala.annotation.tailrec
 
 /** Loads `library.properties` from the jar. */
 object Properties extends PropertiesTrait {
@@ -108,7 +109,7 @@ private[scala] trait PropertiesTrait {
    *  or "version (unknown)" if it cannot be determined.
    */
   val versionString         = "version " + scalaPropOrElse("version.number", "(unknown)")
-  val copyrightString       = scalaPropOrElse("copyright.string", "Copyright 2002-2018, LAMP/EPFL and Lightbend, Inc.")
+  val copyrightString       = scalaPropOrElse("copyright.string", "Copyright 2002-2019, LAMP/EPFL and Lightbend, Inc.")
 
   /** This is the encoding to use reading in source files, overridden with -encoding.
    *  Note that it uses "prop" i.e. looks in the scala jar, not the system properties.
@@ -167,8 +168,7 @@ private[scala] trait PropertiesTrait {
   // and finally the system property based javaHome.
   def jdkHome               = envOrElse("JDK_HOME", envOrElse("JAVA_HOME", javaHome))
 
-  // private[scala] for 2.12
-  private[this] def versionFor(command: String) = f"Scala $command $versionString -- $copyrightString"
+  private[scala] def versionFor(command: String) = f"Scala $command $versionString -- $copyrightString"
 
   def versionMsg            = versionFor(propCategory)
   def scalaCmd              = if (isWin) "scala.bat" else "scala"
@@ -208,6 +208,7 @@ private[scala] trait PropertiesTrait {
           val n = if (depth < 2 && r.isEmpty) -2 else s.substring(0, i).toInt
           (n, r)
       }
+    @tailrec
     def compareVersions(s: String, v: String, depth: Int): Int = {
       if (depth >= 3) 0
       else {

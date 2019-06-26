@@ -120,9 +120,6 @@ trait StrictOptimizedIterableOps[+A, +CC[_], +C]
     b.result()
   }
 
-  override def concat[B >: A](suffix: IterableOnce[B]): CC[B] =
-    strictOptimizedConcat(suffix, iterableFactory.newBuilder[B])
-
   /**
     * @param that Elements to concatenate to this collection
     * @param b Builder to use to build the resulting collection
@@ -131,10 +128,8 @@ trait StrictOptimizedIterableOps[+A, +CC[_], +C]
     * @return The resulting collection
     */
   @inline protected[this] final def strictOptimizedConcat[B >: A, C2](that: IterableOnce[B], b: mutable.Builder[B, C2]): C2 = {
-    val it1 = iterator
-    val it2 = that.iterator
-    b ++= it1
-    b ++= it2
+    b ++= this
+    b ++= that
     b.result()
   }
 
@@ -236,8 +231,8 @@ trait StrictOptimizedIterableOps[+A, +CC[_], +C]
     b.result()
   }
 
-  // Optimized, push-based version of `partitionWith`
-  override def partitionWith[A1, A2](f: A => Either[A1, A2]): (CC[A1], CC[A2]) = {
+  // Optimized, push-based version of `partitionMap`
+  override def partitionMap[A1, A2](f: A => Either[A1, A2]): (CC[A1], CC[A2]) = {
     val l = iterableFactory.newBuilder[A1]
     val r = iterableFactory.newBuilder[A2]
     foreach { x =>
@@ -249,4 +244,41 @@ trait StrictOptimizedIterableOps[+A, +CC[_], +C]
     (l.result(), r.result())
   }
 
+  // Optimization avoids creation of second collection
+  override def tapEach[U](f: A => U): C  = {
+    foreach(f)
+    coll
+  }
+
+  /** A collection containing the last `n` elements of this collection.
+    * $willForceEvaluation
+    */
+  override def takeRight(n: Int): C = {
+    val b = newSpecificBuilder
+    b.sizeHintBounded(n, toIterable)
+    val lead = iterator drop n
+    val it = iterator
+    while (lead.hasNext) {
+      lead.next()
+      it.next()
+    }
+    while (it.hasNext) b += it.next()
+    b.result()
+  }
+
+  /** The rest of the collection without its `n` last elements. For
+    *  linear, immutable collections this should avoid making a copy.
+    *  $willForceEvaluation
+    */
+  override def dropRight(n: Int): C = {
+    val b = newSpecificBuilder
+    if (n >= 0) b.sizeHint(toIterable, delta = -n)
+    val lead = iterator drop n
+    val it = iterator
+    while (lead.hasNext) {
+      b += it.next()
+      lead.next()
+    }
+    b.result()
+  }
 }

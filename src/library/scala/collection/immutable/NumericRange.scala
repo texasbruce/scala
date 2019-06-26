@@ -12,9 +12,8 @@
 
 package scala.collection.immutable
 
-import scala.collection.{AbstractIterator, Iterator}
-
-import java.lang.String
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.{AbstractIterator, AnyStepper, IterableFactoryDefaults, Iterator, Stepper, StepperShape}
 
 /** `NumericRange` is a more generic version of the
   *  `Range` class which works with arbitrary types.
@@ -49,9 +48,23 @@ sealed class NumericRange[T](
   extends AbstractSeq[T]
     with IndexedSeq[T]
     with IndexedSeqOps[T, IndexedSeq, IndexedSeq[T]]
-    with StrictOptimizedSeqOps[T, IndexedSeq, IndexedSeq[T]] { self =>
+    with StrictOptimizedSeqOps[T, IndexedSeq, IndexedSeq[T]]
+    with IterableFactoryDefaults[T, IndexedSeq]
+    with Serializable { self =>
 
   override def iterator: Iterator[T] = new NumericRange.NumericRangeIterator(this, num)
+
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[T, S]): S with EfficientSplit = {
+    import scala.collection.convert._
+    import impl._
+    val s = shape.shape match {
+      case StepperShape.IntShape    => new IntNumericRangeStepper   (this.asInstanceOf[NumericRange[Int]],    0, length)
+      case StepperShape.LongShape   => new LongNumericRangeStepper  (this.asInstanceOf[NumericRange[Long]],   0, length)
+      case _         => shape.parUnbox(new AnyNumericRangeStepper[T](this, 0, length).asInstanceOf[AnyStepper[T] with EfficientSplit])
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
+
 
   /** Note that NumericRange must be invariant so that constructs
     *  such as "1L to 10 by 5" do not infer the range type as AnyVal.
@@ -87,11 +100,11 @@ sealed class NumericRange[T](
 
   @throws[IndexOutOfBoundsException]
   def apply(idx: Int): T = {
-    if (idx < 0 || idx >= length) throw new IndexOutOfBoundsException(idx.toString)
+    if (idx < 0 || idx >= length) throw new IndexOutOfBoundsException(s"$idx is out of bounds (min 0, max ${length - 1})")
     else locationAfterN(idx)
   }
 
-  override def foreach[@specialized(Unit) U](f: T => U): Unit = {
+  override def foreach[@specialized(Specializable.Unit) U](f: T => U): Unit = {
     var count = 0
     var current = start
     while (count < length) {
@@ -146,14 +159,14 @@ sealed class NumericRange[T](
   //   (Integral <: Ordering). This can happen for custom Integral types.
   // - The Ordering is the default Ordering of a well-known Integral type.
     if ((ord eq num) || defaultOrdering.get(num).exists(ord eq _)) {
-      if (num.signum(step) > 0) head
+      if (num.sign(step) > zero) head
       else last
     } else super.min(ord)
 
   override def max[T1 >: T](implicit ord: Ordering[T1]): T =
   // See comment for fast path in min().
     if ((ord eq num) || defaultOrdering.get(num).exists(ord eq _)) {
-      if (num.signum(step) > 0) last
+      if (num.sign(step) > zero) last
       else head
     } else super.max(ord)
 
@@ -240,8 +253,6 @@ sealed class NumericRange[T](
     s"${empty}NumericRange $start $preposition $end$stepped"
   }
 
-  override protected[this] def writeReplace(): AnyRef = this
-
   override protected[this] def className = "NumericRange"
 }
 
@@ -250,6 +261,19 @@ sealed class NumericRange[T](
   *  @define coll numeric range
   */
 object NumericRange {
+  private def bigDecimalCheckUnderflow[T](start: T, end: T, step: T)(implicit num: Integral[T]): Unit = {
+    def FAIL(boundary: T, step: T): Unit = {
+      val msg = boundary match {
+        case bd: BigDecimal => s"Precision ${bd.mc.getPrecision}"
+        case _              => "Precision"
+      }
+      throw new IllegalArgumentException(
+        s"$msg inadequate to represent steps of size $step near $boundary"
+      )
+    }
+    if (num.minus(num.plus(start, step), start) != step) FAIL(start, step)
+    if (num.minus(end, num.minus(end, step))    != step) FAIL(end,   step)
+  }
 
   /** Calculates the number of elements in a range given start, end, step, and
     *  whether or not it is inclusive.  Throws an exception if step == 0 or
@@ -287,16 +311,19 @@ object NumericRange {
       }
       // If we reach this point, deferring to Int failed.
       // Numbers may be big.
+      if (num.isInstanceOf[Numeric.BigDecimalAsIfIntegral]) {
+        bigDecimalCheckUnderflow(start, end, step)  // Throw exception if math is inaccurate (including no progress at all)
+      }
       val one = num.one
       val limit = num.fromInt(Int.MaxValue)
       def check(t: T): T =
         if (num.gt(t, limit)) throw new IllegalArgumentException("More than Int.MaxValue elements.")
         else t
       // If the range crosses zero, it might overflow when subtracted
-      val startside = num.signum(start)
-      val endside = num.signum(end)
+      val startside = num.sign(start)
+      val endside = num.sign(end)
       num.toInt{
-        if (startside*endside >= 0) {
+        if (num.gteq(num.times(startside, endside), zero)) {
           // We're sure we can subtract these numbers.
           // Note that we do not use .rem because of different conventions for Long and BigInt
           val diff = num.minus(end, start)

@@ -283,7 +283,7 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
       lazy val boxer = runtimeClass(symbol.toType).getDeclaredConstructors().head
       lazy val unboxer = {
         val fields @ (field :: _) = symbol.toType.decls.collect{ case ts: TermSymbol if ts.isParamAccessor && ts.isMethod => ts }.toList
-        assert(fields.length == 1, s"$symbol: $fields")
+        assert(fields.lengthIs == 1, s"$symbol: $fields")
         runtimeClass(symbol.asClass).getDeclaredMethod(field.name.toString)
       }
     }
@@ -327,12 +327,13 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
     // that's because we want to have decent performance
     // therefore we move special cases into separate subclasses
     // rather than have them on a hot path them in a unified implementation of the `apply` method
-    private def mkMethodMirror[T: ClassTag](receiver: T, symbol: MethodSymbol): MethodMirror = {
-      def existsParam(pred: Type => Boolean) = symbol.paramss.flatten.map(_.info).exists(pred)
-      if (isBytecodelessMethod(symbol)) new BytecodelessMethodMirror(receiver, symbol)
-      else if (existsParam(isByNameParam) || existsParam(isValueClassParam)) new JavaTransformingMethodMirror(receiver, symbol)
-      else {
-        symbol.paramss.flatten.length match {
+    private def mkMethodMirror[T: ClassTag](receiver: T, symbol: MethodSymbol): MethodMirror =
+      if (isBytecodelessMethod(symbol))
+        new BytecodelessMethodMirror(receiver, symbol)
+      else if (mexists(symbol.paramss)(p => isByNameParam(p.info) || isValueClassParam(p.info)))
+        new JavaTransformingMethodMirror(receiver, symbol)
+      else
+        sumSize(symbol.paramss, 0) match {
           case 0 => new JavaVanillaMethodMirror0(receiver, symbol)
           case 1 => new JavaVanillaMethodMirror1(receiver, symbol)
           case 2 => new JavaVanillaMethodMirror2(receiver, symbol)
@@ -340,8 +341,6 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
           case 4 => new JavaVanillaMethodMirror4(receiver, symbol)
           case _ => new JavaVanillaMethodMirror(receiver, symbol)
         }
-      }
-    }
 
     private abstract class JavaMethodMirror(val symbol: MethodSymbol, protected val ret: DerivedValueClassMetadata) extends MethodMirror {
       lazy val jmeth = ensureAccessible(methodToJava(symbol))
@@ -472,7 +471,7 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
         val varargMatch = args.length >= params.length - 1 && isVarArgsList(params)
         if (!perfectMatch && !varargMatch) {
           val n_arguments = if (isVarArgsList(params)) s"${params.length - 1} or more" else s"${params.length}"
-          val s_arguments = if (params.length == 1 && !isVarArgsList(params)) "argument" else "arguments"
+          val s_arguments = if (params.lengthIs == 1 && !isVarArgsList(params)) "argument" else "arguments"
           abort(s"${showDecl(symbol)} takes $n_arguments $s_arguments")
         }
 
@@ -678,7 +677,7 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
     private class TypeParamCompleter(jtvar: jTypeVariable[_ <: GenericDeclaration]) extends LazyType with FlagAgnosticCompleter {
       override def load(sym: Symbol) = complete(sym)
       override def complete(sym: Symbol) = {
-        sym setInfo TypeBounds.upper(glb(jtvar.getBounds.toList map typeToScala map objToAny))
+        sym setInfo TypeBounds.upper(glb(jtvar.getBounds.toList map typeToScala))
         markAllCompleted(sym)
       }
     }
@@ -1085,7 +1084,7 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
           val tparam = owner.newExistential(newTypeName("T$" + tparams.length))
             .setInfo(TypeBounds(
               lub(jwild.getLowerBounds.toList map typeToScala),
-              glb(jwild.getUpperBounds.toList map typeToScala map objToAny)))
+              glb(jwild.getUpperBounds.toList map typeToScala)))
           tparams += tparam
           typeRef(NoPrefix, tparam, List())
         case _ =>
@@ -1103,7 +1102,10 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
           arrayType(typeToScala(jclazz.getComponentType))
         else {
           val clazz = classToScala(jclazz)
-          rawToExistential(typeRef(clazz.owner.thisType, clazz, List()))
+          rawToExistential(typeRef(clazz.owner.thisType, clazz, List())) match {
+            case ObjectTpe => ObjectTpeJava
+            case tp => tp
+          }
         }
       case japplied: ParameterizedType =>
         // http://stackoverflow.com/questions/5767122/parameterizedtype-getrawtype-returns-j-l-r-type-not-class
@@ -1113,7 +1115,11 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
         val (args, bounds) = targsToScala(pre.typeSymbol, args0.toList)
         newExistentialType(bounds, typeRef(pre, sym, args))
       case jarr: GenericArrayType =>
-        arrayType(typeToScala(jarr.getGenericComponentType))
+        var elemtp = typeToScala(jarr.getGenericComponentType)
+        if (elemtp.typeSymbol.isAbstractType && elemtp.upperBound =:= ObjectTpe) {
+          elemtp = intersectionType(List(elemtp, ObjectTpe))
+        }
+        arrayType(elemtp)
       case jtvar: jTypeVariable[_] =>
         val tparam = typeParamToScala(jtvar)
         typeRef(NoPrefix, tparam, List())
@@ -1220,7 +1226,7 @@ private[scala] trait JavaMirrors extends internal.SymbolTable with api.JavaUnive
             if (param.isNamePresent) TermName(param.getName)
             else nme.syntheticParamName(ix + 1)
           meth.owner.newValueParameter(name, meth.pos)
-            .setInfo(objToAny(typeToScala(param.getParameterizedType)))
+            .setInfo(typeToScala(param.getParameterizedType))
             .setFlag(if (param.isNamePresent) 0 else SYNTHETIC)
       }
     }

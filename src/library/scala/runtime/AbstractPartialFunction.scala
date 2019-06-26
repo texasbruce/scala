@@ -23,11 +23,8 @@ package runtime
  *    of partial function literals.
  *
  *  This trait is used as a basis for implementation of all partial function literals.
- *
- *  @author  Pavel Pavlov
- *  @since   2.10
  */
-abstract class AbstractPartialFunction[@specialized(scala.Int, scala.Long, scala.Float, scala.Double) -T1, @specialized(scala.Unit, scala.Boolean, scala.Int, scala.Float, scala.Long, scala.Double) +R] extends Function1[T1, R] with PartialFunction[T1, R] { self =>
+abstract class AbstractPartialFunction[@specialized(Specializable.Arg) -T1, @specialized(Specializable.Return) +R] extends Function1[T1, R] with PartialFunction[T1, R] { self =>
   // this method must be overridden for better performance,
   // for backwards compatibility, fall back to the one inherited from PartialFunction
   // this assumes the old-school partial functions override the apply method, though

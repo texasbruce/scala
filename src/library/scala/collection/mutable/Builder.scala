@@ -12,7 +12,14 @@
 
 package scala.collection.mutable
 
-/** Base trait for collection builders */
+/** Base trait for collection builders.
+  *
+  * After calling `result()` the behavior of a Builder (which is not also a [[scala.collection.mutable.ReusableBuilder]])
+  * is undefined. No further methods should be called. It is common for mutable collections to be their own non-reusable
+  * Builder, in which case `result()` simply returns `this`.
+  *
+  * @see [[scala.collection.mutable.ReusableBuilder]] for Builders which can be reused after calling `result()`
+  */
 trait Builder[-A, +To] extends Growable[A] { self =>
 
   /** Clears the contents of this builder.
@@ -74,6 +81,6 @@ trait Builder[-A, +To] extends Growable[A] { self =>
     override def addAll(xs: IterableOnce[A]): this.type = { self ++= xs; this }
     override def sizeHint(size: Int): Unit = self.sizeHint(size)
     def result(): NewTo = f(self.result())
+    override def knownSize: Int = self.knownSize
   }
-
 }

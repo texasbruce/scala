@@ -16,10 +16,6 @@ package math
 import java.math.BigInteger
 import scala.language.implicitConversions
 
-/**
- *  @author  Martin Odersky
- *  @since 2.1
- */
 object BigInt {
 
   private[this] val minCached = -1024
@@ -108,9 +104,6 @@ object BigInt {
   implicit def javaBigInteger2bigInt(x: BigInteger): BigInt = apply(x)
 }
 
-/**
- *  @author  Martin Odersky
- */
 final class BigInt(val bigInteger: BigInteger)
   extends ScalaNumber
     with ScalaNumericConversions
@@ -279,6 +272,13 @@ final class BigInt(val bigInteger: BigInteger)
    *   0  if it is equal to 0.
    */
   def signum: Int = this.bigInteger.signum()
+
+  /** Returns the sign of this BigInt;
+   *   -1 if it is less than 0,
+   *   +1 if it is greater than 0,
+   *   0  if it is equal to 0.
+   */
+  def sign: BigInt = signum
 
   /** Returns the bitwise complement of this BigInt
    */

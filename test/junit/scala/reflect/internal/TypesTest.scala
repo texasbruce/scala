@@ -7,6 +7,7 @@ import org.junit.runners.JUnit4
 import scala.collection.mutable
 import scala.tools.nsc.settings.ScalaVersion
 import scala.tools.nsc.symtab.SymbolTableForUnitTesting
+import language.higherKinds
 
 @RunWith(classOf[JUnit4])
 class TypesTest {
@@ -174,7 +175,7 @@ class TypesTest {
         TypeRef(pre, sym, Nil)
     }
 
-    // apply Foo to type arugment A
+    // apply Foo to type argument A
     def Foo(A: Type) = FooTpe match {
       case TypeRef(pre, sym, Nil) => TypeRef(pre, sym, A :: Nil)
     }
@@ -318,10 +319,10 @@ class TypesTest {
     val aSym = typeOf[Foo.type].member(TermName("a"))
     val nSym = typeOf[Foo.type].member(TermName("n"))
 
-    assert(typeIsAny(AnyTpe))
+    assert(typeIsAnyOrJavaObject(AnyTpe))
     assert(typeIsNothing(NothingTpe))
-    assert(!typeIsAny(LiteralType(Constant(1))))
-    assert(!typeIsAny(SingleType(NoPrefix, aSym)))
+    assert(!typeIsAnyOrJavaObject(LiteralType(Constant(1))))
+    assert(!typeIsAnyOrJavaObject(SingleType(NoPrefix, aSym)))
     assert(!typeIsNothing(SingleType(NoPrefix, nSym)))
   }
 

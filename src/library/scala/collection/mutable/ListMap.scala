@@ -14,6 +14,7 @@ package scala.collection
 package mutable
 
 import scala.annotation.tailrec
+import scala.collection.generic.DefaultSerializable
 import scala.collection.immutable.List
 
 /** A simple mutable map backed by a list, so it preserves insertion order.
@@ -33,7 +34,9 @@ class ListMap[K, V]
   extends AbstractMap[K, V]
     with MapOps[K, V, ListMap, ListMap[K, V]]
     with StrictOptimizedIterableOps[(K, V), Iterable, ListMap[K, V]]
-    with StrictOptimizedMapOps[K, V, ListMap, ListMap[K, V]] {
+    with StrictOptimizedMapOps[K, V, ListMap, ListMap[K, V]]
+    with MapFactoryDefaults[K, V, ListMap, Iterable]
+    with DefaultSerializable {
 
   override def mapFactory: MapFactory[ListMap] = ListMap
 
@@ -43,14 +46,18 @@ class ListMap[K, V]
   def get(key: K): Option[V] = elems find (_._1 == key) map (_._2)
   def iterator: Iterator[(K, V)] = elems.iterator
 
-  final override def addOne(kv: (K, V)) = { elems = remove(kv._1, elems, List()); elems = kv :: elems; siz += 1; this }
+  final override def addOne(kv: (K, V)) = {
+    val (e, key0) = remove(kv._1, elems, List())
+    elems = (key0, kv._2) :: e
+    siz += 1; this
+  }
 
-  final override def subtractOne(key: K) = { elems = remove(key, elems, List()); this }
+  final override def subtractOne(key: K) = { elems = remove(key, elems, List())._1; this }
 
   @tailrec
-  private def remove(key: K, elems: List[(K, V)], acc: List[(K, V)]): List[(K, V)] = {
-    if (elems.isEmpty) acc
-    else if (elems.head._1 == key) { siz -= 1; acc ::: elems.tail }
+  private def remove(key: K, elems: List[(K, V)], acc: List[(K, V)]): (List[(K, V)], K) = {
+    if (elems.isEmpty) (acc, key)
+    else if (elems.head._1 == key) { siz -= 1; (acc ::: elems.tail, elems.head._1) }
     else remove(key, elems.tail, elems.head :: acc)
   }
 

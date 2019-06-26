@@ -36,12 +36,12 @@ import scala.annotation.meta._
   *           ^
   *  }}}
   *
-  *  @since  2.8.1
   *  @see    [[scala.deprecated]]
   *  @see    [[scala.deprecatedInheritance]]
   *  @see    [[scala.deprecatedOverriding]]
   */
 @param
+@deprecatedInheritance("Scheduled for being final in 2.14", "2.13.0")
 class deprecatedName(name: String = "<none>", since: String = "") extends scala.annotation.StaticAnnotation {
   @deprecated("The parameter name should be a String, not a symbol.", "2.13.0") def this(name: Symbol, since: String) = this(name.name, since)
   @deprecated("The parameter name should be a String, not a symbol.", "2.13.0") def this(name: Symbol) = this(name.name, "")

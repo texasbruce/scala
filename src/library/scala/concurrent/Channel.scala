@@ -16,12 +16,12 @@ package scala.concurrent
  *  which are read by one or more reader threads.
  *
  *  @tparam A type of data exchanged
- *  @author  Martin Odersky
  */
+@deprecated("Use `java.util.concurrent.LinkedTransferQueue` instead.", since = "2.13.0")
 class Channel[A] {
   private class LinkedList {
     var elem: A = _
-    var next: LinkedList = null
+    var next: LinkedList = _
   }
   private[this] var written = new LinkedList    // FIFO queue, realized through
   private[this] var lastWritten = written       // aliasing of a linked list
@@ -32,7 +32,7 @@ class Channel[A] {
    *
    * @param x object to enqueue to this channel
    */
-  def write(x: A) = synchronized {
+  def write(x: A): Unit = synchronized {
     lastWritten.elem = x
     lastWritten.next = new LinkedList
     lastWritten = lastWritten.next

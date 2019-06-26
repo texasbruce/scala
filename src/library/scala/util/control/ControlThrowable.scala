@@ -10,30 +10,38 @@
  * additional information regarding copyright ownership.
  */
 
-package scala
-package util.control
+package scala.util.control
 
-/** A marker trait indicating that the `Throwable` it is mixed into is
- *  intended for flow control.
+/** A parent class for throwable objects intended for flow control.
  *
- *  Note that `Throwable` subclasses which extend this trait may extend any
- *  other `Throwable` subclass (eg. `RuntimeException`) and are not required
- *  to extend `Throwable` directly.
+ *  Instances of `ControlThrowable` should not normally be caught.
  *
- *  Instances of `Throwable` subclasses marked in this way should not normally
- *  be caught. Where catch-all behaviour is required `ControlThrowable`
- *  should be propagated, for example:
+ *  As a convenience, `NonFatal` does not match `ControlThrowable`.
+ *
  *  {{{
- *  import scala.util.control.ControlThrowable
+ *  import scala.util.control.{Breaks, NonFatal}, Breaks.{break, breakable}
  *
- *  try {
- *    // Body might throw arbitrarily
- *  } catch {
- *    case c: ControlThrowable => throw c // propagate
- *    case t: Exception        => log(t)  // log and suppress
+ *  breakable {
+ *    for (v <- values) {
+ *      try {
+ *        if (p(v)) break
+ *        else ???
+ *      } catch {
+ *        case NonFatal(t) => log(t)  // can't catch a break
+ *      }
+ *    }
  *  }
  *  }}}
  *
- *  @author Miles Sabin
+ *  Suppression is disabled, because flow control should not suppress
+ *  an exceptional condition. Stack traces are also disabled, allowing
+ *  instances of `ControlThrowable` to be safely reused.
+ *
+ *  Instances of `ControlThrowable` should not normally have a cause.
+ *  Legacy subclasses may set a cause using `initCause`.
  */
-trait ControlThrowable extends Throwable with NoStackTrace
+abstract class ControlThrowable(message: String) extends Throwable(
+  message, /*cause*/ null, /*enableSuppression=*/ false, /*writableStackTrace*/ false) {
+
+  def this() = this(message = null)
+}

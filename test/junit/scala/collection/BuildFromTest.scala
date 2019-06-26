@@ -4,6 +4,7 @@ import org.junit.Test
 
 import scala.collection.mutable.Builder
 import scala.math.Ordering
+import language.higherKinds
 
 class BuildFromTest {
 
@@ -14,7 +15,7 @@ class BuildFromTest {
       case _ => None
     }.map(_.result())
   def optionSequence1[CC[X] <: SortedSet[X] with SortedSetOps[X, CC, CC[X]], A : Ordering](xs: CC[Option[A]]): Option[CC[A]] =
-    xs.foldLeft[Option[Builder[A, CC[A]]]](Some(xs.sortedIterableFactory.newBuilder[A])) {
+    xs.foldLeft[Option[Builder[A, CC[A]]]](Some((xs: SortedSetOps[Option[A], CC, CC[Option[A]]] /*TODO why is this ascription needed? introduced with #7929*/).sortedIterableFactory.newBuilder[A])) {
       case (Some(builder), Some(a)) => Some(builder += a)
       case _ => None
     }.map(_.result())
@@ -105,7 +106,7 @@ class BuildFromTest {
     builder.result()
   }
 
-  def partitionWith[A, B, C, ToL, ToR](coll: Iterable[A])(f: A => Either[B, C])
+  def partitionMap[A, B, C, ToL, ToR](coll: Iterable[A])(f: A => Either[B, C])
               (implicit bfLeft:  BuildFrom[coll.type, B, ToL], bfRight: BuildFrom[coll.type, C, ToR]): (ToL, ToR) = {
     val left = bfLeft.newBuilder(coll)
     val right = bfRight.newBuilder(coll)
@@ -135,16 +136,24 @@ class BuildFromTest {
   }
 
   @Test
-  def partitionWithTest: Unit = {
+  def partitionMapTest: Unit = {
     val xs1 = immutable.List(1, 2, 3)
-    val (xs2, xs3) = partitionWith(xs1)(x => if (x % 2 == 0) Left(x) else Right(x.toString))
+    val (xs2, xs3) = partitionMap(xs1)(x => if (x % 2 == 0) Left(x) else Right(x.toString))
     val xs4: immutable.List[Int] = xs2
     val xs5: immutable.List[String] = xs3
 
     val xs6 = immutable.TreeMap((1, "1"), (2, "2"))
-    val (xs7, xs8) = partitionWith(xs6) { case (k, v) => Left[(String, Int), (Int, Boolean)]((v, k)) }
+    val (xs7, xs8) = partitionMap(xs6) { case (k, v) => Left[(String, Int), (Int, Boolean)]((v, k)) }
     val xs9: immutable.TreeMap[String, Int] = xs7
     val xs10: immutable.TreeMap[Int, Boolean] = xs8
+  }
+
+  @Test
+  def buildFromToFactory: Unit = {
+    val bf = implicitly[BuildFrom[Iterable[Int], Int, Iterable[Int]]]
+    val f = bf.toFactory(Set.empty[Int])
+    val bs = f.fromSpecific(Iterator(1, 2, 3))
+    bs.asInstanceOf[Set[Int]]
   }
 
   implicitly[BuildFrom[String, Char, String]]

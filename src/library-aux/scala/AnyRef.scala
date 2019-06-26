@@ -47,7 +47,7 @@ trait AnyRef extends Any {
    *  @param    body    the code to execute
    *  @return           the result of `body`
    */
-  def synchronized[T](body: => T): T
+  def synchronized[T](body: => T): T = sys.error("synchronized")
 
   /** Tests whether the argument (`that`) is a reference to the receiver object (`this`).
    *
@@ -122,6 +122,21 @@ trait AnyRef extends Any {
    *  @note   not specified by SLS as a member of AnyRef
    */
   final def wait (): Unit
+
+  /** Causes the current Thread to wait until another Thread invokes
+   * the notify() or notifyAll() methods, or a specified amount of time has elapsed.
+   *
+   * @param timeout the maximum time to wait in milliseconds.
+   * @param nanos   additional time, in nanoseconds range 0-999999.
+   * @note not specified by SLS as a member of AnyRef
+   */
   final def wait (timeout: Long, nanos: Int): Unit
+
+  /** Causes the current Thread to wait until another Thread invokes
+   * the notify() or notifyAll() methods, or a specified amount of time has elapsed.
+   *
+   * @param timeout the maximum time to wait in milliseconds.
+   * @note not specified by SLS as a member of AnyRef
+   */
   final def wait (timeout: Long): Unit
 }

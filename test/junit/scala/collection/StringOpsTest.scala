@@ -4,7 +4,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 import org.junit.Assert.assertEquals
-import scala.tools.testing.AssertUtil.assertThrows
+import scala.tools.testkit.AssertUtil.assertThrows
 
 
 @RunWith(classOf[JUnit4])
@@ -92,5 +92,14 @@ class StringOpsTest {
     assertEquals("aaa", "a" * 3)
     assertEquals("", "a" * 0)
     assertEquals("", "a" * -1)
+  }
+
+  @Test def withFilterAndThenMap(): Unit = {
+    assertEquals("hello".withFilter(_ != 'e').map(_.toUpper), "HLLO")
+  }
+
+  @Test def collect: Unit = {
+    assertEquals("de", "abcdef".collect { case c @ ('b' | 'c') => (c+2).toChar })
+    assertEquals(Seq('d'.toInt, 'e'.toInt), "abcdef".collect { case c @ ('b' | 'c') => (c+2).toInt })
   }
 }

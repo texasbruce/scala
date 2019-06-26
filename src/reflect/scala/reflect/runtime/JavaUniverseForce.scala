@@ -17,7 +17,7 @@ package runtime
 trait JavaUniverseForce { self: runtime.JavaUniverse  =>
   def force(): Unit = {
     Literal(Constant(42)).duplicate
-    nme.flattenedName()
+    nme.flattenedName(NoSymbol, nme.NO_NAME)
     nme.raw
     WeakTypeTag
     TypeTag
@@ -155,7 +155,7 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     this.ErrorType
     this.WildcardType
     this.BoundedWildcardType
-    this.OverloadedArgFunProto
+    this.OverloadedArgProto
     this.NoType
     this.NoPrefix
     this.ThisType
@@ -163,7 +163,6 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     this.SuperType
     this.TypeBounds
     this.CompoundType
-    this.baseClassesCycleMonitor
     this.RefinedType
     this.ClassInfoType
     this.ConstantType
@@ -202,6 +201,8 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     this.typeVarToOriginMap
     this.ErroneousCollector
     this.adaptToNewRunMap
+    this.UnrelatableCollector
+    this.IsRelatableCollector
     this.SubTypePair
     this.SymbolKind
     this.NoSymbol
@@ -232,6 +233,7 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     definitions.NothingTpe
     definitions.NullTpe
     definitions.ObjectTpe
+    definitions.ObjectTpeJava
     definitions.SerializableTpe
     definitions.StringTpe
     definitions.ThrowableTpe
@@ -272,7 +274,6 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     definitions.TypeConstraintClass
     definitions.SingletonClass
     definitions.SerializableClass
-    definitions.JavaSerializableClass
     definitions.ComparableClass
     definitions.JavaCloneableClass
     definitions.JavaNumberClass
@@ -282,6 +283,9 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     definitions.ByNameParamClass
     definitions.JavaRepeatedParamClass
     definitions.RepeatedParamClass
+    definitions.SubTypeClass
+    definitions.SameTypeClass
+    definitions.DummyImplicitClass
     definitions.ConsClass
     definitions.IteratorClass
     definitions.IterableClass
@@ -426,6 +430,7 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     definitions.UncheckedClass
     definitions.UncheckedBoundsClass
     definitions.UnspecializedClass
+    definitions.UnusedClass
     definitions.VolatileAttr
     definitions.FunctionalInterfaceClass
     definitions.BeanGetterTargetClass

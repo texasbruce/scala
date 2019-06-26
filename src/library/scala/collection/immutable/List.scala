@@ -19,6 +19,7 @@ import java.io.{ObjectInputStream, ObjectOutputStream}
 import scala.annotation.unchecked.uncheckedVariance
 import scala.annotation.tailrec
 import mutable.{Builder, ListBuffer}
+import scala.collection.generic.DefaultSerializable
 import scala.runtime.Statics.releaseFence
 
 /** A class for immutable linked lists representing ordered collections
@@ -30,8 +31,6 @@ import scala.runtime.Statics.releaseFence
   *
   *  This class is optimal for last-in-first-out (LIFO), stack-like access patterns. If you need another access
   *  pattern, for example, random access or FIFO, consider using a collection more suited to this than `List`.
-  *
-  *  $usesMutableState
   *
   *  ==Performance==
   *  '''Time:''' `List` has `O(1)` prepend and head/tail access. Most other operations are `O(n)` on the number of elements in the list.
@@ -68,8 +67,6 @@ import scala.runtime.Statics.releaseFence
   *        objects that rely on structural sharing), will be serialized and deserialized with multiple lists, one for
   *        each reference to it. I.e. structural sharing is lost after serialization/deserialization.
   *
-  *  @author  Martin Odersky and others
-  *  @since   1.0
   *  @see  [[http://docs.scala-lang.org/overviews/collections/concrete-immutable-collection-classes.html#lists "Scala's Collection Library overview"]]
   *  section on `Lists` for more information.
   *
@@ -86,7 +83,9 @@ sealed abstract class List[+A]
     with LinearSeq[A]
     with LinearSeqOps[A, List, List[A]]
     with StrictOptimizedLinearSeqOps[A, List, List[A]]
-    with StrictOptimizedSeqOps[A, List, List[A]] {
+    with StrictOptimizedSeqOps[A, List, List[A]]
+    with IterableFactoryDefaults[A, List]
+    with DefaultSerializable {
 
   override def iterableFactory: SeqFactory[List] = List
 
@@ -94,12 +93,8 @@ sealed abstract class List[+A]
     *  @param elem the element to prepend.
     *  @return  a list which contains `x` as first element and
     *           which continues with this list.
-    *
-    *  @usecase def ::(elem: A): List[A]
-    *    @inheritdoc
-    *
-    *    Example:
-    *    {{{1 :: List(2, 3) = List(2, 3).::(1) = List(1, 2, 3)}}}
+    *  Example:
+    *  {{{1 :: List(2, 3) = List(2, 3).::(1) = List(1, 2, 3)}}}
     */
   def :: [B >: A](elem: B): List[B] =  new ::(elem, this)
 
@@ -133,6 +128,8 @@ sealed abstract class List[+A]
     }
     these
   }
+
+  override final def isEmpty: Boolean = this eq Nil
 
   override def prepended[B >: A](elem: B): List[B] = elem :: this
 
@@ -215,7 +212,7 @@ sealed abstract class List[+A]
     if (i == index && current.nonEmpty) {
       prefix.prependToList(elem :: current.tail)
     } else {
-      throw new IndexOutOfBoundsException(index.toString)
+      throw new IndexOutOfBoundsException(s"$index is out of bounds (min 0, max ${length-1})")
     }
   }
 
@@ -261,29 +258,25 @@ sealed abstract class List[+A]
       h
     }
   }
+
   final override def flatMap[B](f: A => IterableOnce[B]): List[B] = {
-    if (this eq Nil) Nil else {
-      var rest = this
-      var found = false
-      var h: ::[B] = null
-      var t: ::[B] = null
-      while (rest ne Nil) {
-        f(rest.head).iterator.foreach { b =>
-          if (!found) {
-            h = new ::(b, Nil)
-            t = h
-            found = true
-          }
-          else {
-            val nx = new ::(b, Nil)
-            t.next = nx
-            t = nx
-          }
+    var rest = this
+    var h: ::[B] = null
+    var t: ::[B] = null
+    while (rest ne Nil) {
+      val it = f(rest.head).iterator
+      while (it.hasNext) {
+        val nx = new ::(it.next(), Nil)
+        if (t eq null) {
+          h = nx
+        } else {
+          t.next = nx
         }
-        rest = rest.tail
+        t = nx
       }
-      if (!found) Nil else {releaseFence(); h}
+      rest = rest.tail
     }
+    if (h eq null) Nil else {releaseFence(); h}
   }
 
   @inline final override def takeWhile(p: A => Boolean): List[A] = {
@@ -397,6 +390,19 @@ sealed abstract class List[+A]
     None
   }
 
+  override def last: A = {
+    if (isEmpty) throw new NoSuchElementException("List.last")
+    else {
+      var these = this
+      var scout = tail
+      while (!scout.isEmpty) {
+        these = scout
+        scout = scout.tail
+      }
+      these.head
+    }
+  }
+
   override def corresponds[B](that: collection.Seq[B])(p: (A, B) => Boolean): Boolean = that match {
     case that: LinearSeq[B] =>
       var i = this
@@ -422,14 +428,11 @@ sealed abstract class List[+A]
     *  @tparam B     the element type of the returned collection.
     *  @return       a list resulting from applying the given function
     *                `f` to each element of this list and collecting the results.
-    *
-    *  @usecase def mapConserve(f: A => A): List[A]
-    *    @inheritdoc
     */
   @`inline` final def mapConserve[B >: A <: AnyRef](f: A => B): List[B] = {
     // Note to developers: there exists a duplication between this function and `reflect.internal.util.Collections#map2Conserve`.
     // If any successful optimization attempts or other changes are made, please rehash them there too.
-    //@tailrec
+    @tailrec
     def loop(mappedHead: List[B], mappedLast: ::[B], unchanged: List[A], pending: List[A]): List[B] = {
       if (pending.isEmpty) {
         if (mappedHead eq null) unchanged
@@ -583,13 +586,11 @@ sealed abstract class List[+A]
 final case class :: [+A](override val head: A, private[scala] var next: List[A @uncheckedVariance]) // sound because `next` is used only locally
   extends List[A] {
   releaseFence()
-  override def isEmpty: Boolean = false
   override def headOption: Some[A] = Some(head)
   override def tail: List[A] = next
 }
 
 case object Nil extends List[Nothing] {
-  override def isEmpty: Boolean = true
   override def head: Nothing = throw new NoSuchElementException("head of empty list")
   override def headOption: None.type = None
   override def tail: Nothing = throw new UnsupportedOperationException("tail of empty list")
@@ -597,6 +598,10 @@ case object Nil extends List[Nothing] {
   override def init: Nothing = throw new UnsupportedOperationException("init of empty list")
   override def knownSize: Int = 0
   override def iterator: Iterator[Nothing] = Iterator.empty
+  override def unzip[A1, A2](implicit asPair: Nothing => (A1, A2)): (List[A1], List[A2]) = EmptyUnzip
+
+  @transient
+  private[this] val EmptyUnzip = (Nil, Nil)
 }
 
 /**
@@ -610,6 +615,7 @@ object List extends StrictOptimizedSeqFactory[List] {
   def from[B](coll: collection.IterableOnce[B]): List[B] = coll match {
     case coll: List[B] => coll
     case _ if coll.knownSize == 0 => empty[B]
+    case b: ListBuffer[B] => b.toList
     case _ => ListBuffer.from(coll).toList
   }
 
@@ -617,5 +623,6 @@ object List extends StrictOptimizedSeqFactory[List] {
 
   def empty[A]: List[A] = Nil
 
+  @transient
   private[collection] val partialNotApplied = new Function1[Any, Any] { def apply(x: Any): Any = this }
 }

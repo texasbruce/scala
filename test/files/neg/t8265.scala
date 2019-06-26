@@ -1,3 +1,3 @@
-// scalac: -Xsource:2.10 -deprecation -language:higherKinds -Xfatal-warnings
+// scalac: -language:higherKinds
 //
 class Foo[+CC[X]] { type Coll = CC[_] }

@@ -15,12 +15,8 @@ package reflect
 package internal
 
 import Flags._
+import scala.annotation.tailrec
 
-/** This class ...
- *
- *  @author Martin Odersky
- *  @version 1.0
- */
 abstract class TreeInfo {
   val global: SymbolTable
 
@@ -171,7 +167,8 @@ abstract class TreeInfo {
    *  takes a different code path than all to follow; but they are safe to inline
    *  because the expression result from evaluating them is always the same.
    */
-  def isExprSafeToInline(tree: Tree): Boolean = tree match {
+  @tailrec
+  final def isExprSafeToInline(tree: Tree): Boolean = tree match {
     case EmptyTree
        | This(_)
        | Super(_, _)
@@ -212,7 +209,8 @@ abstract class TreeInfo {
    *  don't reuse it for important matters like inlining
    *  decisions.
    */
-  def isPureExprForWarningPurposes(tree: Tree): Boolean = tree match {
+  @tailrec
+  final def isPureExprForWarningPurposes(tree: Tree): Boolean = tree match {
     case Typed(expr, _)                    => isPureExprForWarningPurposes(expr)
     case Function(_, _)                    => true
     case EmptyTree | Literal(Constant(())) => false
@@ -363,7 +361,8 @@ abstract class TreeInfo {
   }
 
   /** Strips layers of `.asInstanceOf[T]` / `_.$asInstanceOf[T]()` from an expression */
-  def stripCast(tree: Tree): Tree = tree match {
+  @tailrec
+  final def stripCast(tree: Tree): Tree = tree match {
     case TypeApply(sel @ Select(inner, _), _) if isCastSymbol(sel.symbol) =>
       stripCast(inner)
     case Apply(TypeApply(sel @ Select(inner, _), _), Nil) if isCastSymbol(sel.symbol) =>
@@ -431,6 +430,7 @@ abstract class TreeInfo {
    *
    */
   def isVarPatternDeep(tree: Tree): Boolean = {
+    @tailrec
     def isVarPatternDeep0(tree: Tree): Boolean = {
       tree match {
         case Bind(name, pat)  => isVarPatternDeep0(pat)
@@ -574,7 +574,7 @@ abstract class TreeInfo {
   def isSwitchAnnotation(tpe: Type) = tpe hasAnnotation definitions.SwitchClass
 
   /** can this type be a type pattern */
-  def mayBeTypePat(tree: Tree): Boolean = tree match {
+  final def mayBeTypePat(tree: Tree): Boolean = tree match {
     case CompoundTypeTree(Template(tps, _, Nil)) => tps exists mayBeTypePat
     case Annotated(_, tp)                        => mayBeTypePat(tp)
     case AppliedTypeTree(constr, args)           => mayBeTypePat(constr) || args.exists(_.isInstanceOf[Bind])
@@ -695,7 +695,8 @@ abstract class TreeInfo {
   }
 
   /** The underlying pattern ignoring any bindings */
-  def unbind(x: Tree): Tree = x match {
+  @tailrec
+  final def unbind(x: Tree): Tree = x match {
     case Bind(_, y) => unbind(y)
     case y          => y
   }
@@ -781,6 +782,7 @@ abstract class TreeInfo {
      *  The original tree if it's not an application.
      */
     def callee: Tree = {
+      @tailrec
       def loop(tree: Tree): Tree = tree match {
         case Apply(fn, _) => loop(fn)
         case tree         => tree
@@ -844,7 +846,8 @@ abstract class TreeInfo {
   /** Does list of trees start with a definition of
    *  a class or module with given name (ignoring imports)
    */
-  def firstDefinesClassOrObject(trees: List[Tree], name: Name): Boolean = trees match {
+  @tailrec
+  final def firstDefinesClassOrObject(trees: List[Tree], name: Name): Boolean = trees match {
     case Import(_, _) :: xs             => firstDefinesClassOrObject(xs, name)
     case Annotated(_, tree1) :: _       => firstDefinesClassOrObject(List(tree1), name)
     case ModuleDef(_, `name`, _) :: _   => true
@@ -857,6 +860,7 @@ abstract class TreeInfo {
    */
   object Unapplied {
     // Duplicated with `spliceApply`
+    @tailrec
     def unapply(tree: Tree): Option[Tree] = tree match {
       // scala/bug#7868 Admit Select() to account for numeric widening, e.g. <unapplySelector>.toInt
       case Apply(fun, (Ident(nme.SELECTOR_DUMMY)| Select(Ident(nme.SELECTOR_DUMMY), _)) :: Nil)
@@ -903,12 +907,19 @@ abstract class TreeInfo {
 
   def isApplyDynamicName(name: Name) = (name == nme.updateDynamic) || (name == nme.selectDynamic) || (name == nme.applyDynamic) || (name == nme.applyDynamicNamed)
 
+  private object LiteralNameOrAdapted {
+    def unapply(tree: Tree) = tree match {
+      case Literal(Constant(name))                 => Some(name)
+      case Apply(_, List(Literal(Constant(name)))) => Some(name)
+      case _                                       => None
+    }
+  }
   class DynamicApplicationExtractor(nameTest: Name => Boolean) {
     def unapply(tree: Tree) = tree match {
-      case Apply(TypeApply(Select(qual, oper), _), List(Literal(Constant(name)))) if nameTest(oper) => Some((qual, name))
-      case Apply(Select(qual, oper), List(Literal(Constant(name)))) if nameTest(oper) => Some((qual, name))
-      case Apply(Ident(oper), List(Literal(Constant(name)))) if nameTest(oper) => Some((EmptyTree, name))
-      case _ => None
+      case Apply(TypeApply(Select(qual, oper), _), List(LiteralNameOrAdapted(name))) if nameTest(oper) => Some((qual, name))
+      case Apply(Select(qual, oper), List(LiteralNameOrAdapted(name))) if nameTest(oper)               => Some((qual, name))
+      case Apply(Ident(oper), List(LiteralNameOrAdapted(name))) if nameTest(oper)                      => Some((EmptyTree, name))
+      case _                                                                                           => None
     }
   }
   object DynamicUpdate extends DynamicApplicationExtractor(_ == nme.updateDynamic)
@@ -916,6 +927,7 @@ abstract class TreeInfo {
   object DynamicApplicationNamed extends DynamicApplicationExtractor(_ == nme.applyDynamicNamed)
 
   object MacroImplReference {
+    @tailrec
     private def refPart(tree: Tree): Tree = tree match {
       case TypeApply(fun, _) => refPart(fun)
       case ref: RefTree => ref
@@ -944,7 +956,8 @@ abstract class TreeInfo {
     }
   }
 
-  def isNullaryInvocation(tree: Tree): Boolean =
+  @tailrec
+  final def isNullaryInvocation(tree: Tree): Boolean =
     tree.symbol != null && tree.symbol.isMethod && (tree match {
       case TypeApply(fun, _) => isNullaryInvocation(fun)
       case tree: RefTree => true
@@ -956,7 +969,8 @@ abstract class TreeInfo {
     sym != null && sym.isTermMacro && !sym.isErroneous
   }
 
-  def isMacroApplicationOrBlock(tree: Tree): Boolean = tree match {
+  @tailrec
+  final def isMacroApplicationOrBlock(tree: Tree): Boolean = tree match {
     case Block(_, expr) => isMacroApplicationOrBlock(expr)
     case tree => isMacroApplication(tree)
   }
@@ -1085,4 +1099,17 @@ trait MacroAnnotionTreeInfo { self: TreeInfo =>
       SyntacticClassDef(mods, name, tparams, constrMods, vparamss.map(_.map(_.duplicate)), earlyDefs, parents, selfType, body)
     }
   }
+
+  // Return a pair consisting of (all statements up to and including superclass and trait constr calls, rest)
+  final def splitAtSuper(stats: List[Tree], classOnly: Boolean): (List[Tree], List[Tree]) = {
+    @tailrec
+    def isConstr(tree: Tree): Boolean = tree match {
+      case Block(_, expr) => isConstr(expr) // scala/bug#6481 account for named argument blocks
+      case _              => (tree.symbol ne null) && (if (classOnly) tree.symbol.isClassConstructor else tree.symbol.isConstructor)
+    }
+    val (pre, rest0)       = stats span (!isConstr(_))
+    val (supercalls, rest) = rest0 span (isConstr(_))
+    (pre ::: supercalls, rest)
+  }
+
 }

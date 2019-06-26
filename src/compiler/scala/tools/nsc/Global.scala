@@ -16,7 +16,7 @@ package nsc
 
 import java.io.{FileNotFoundException, IOException}
 import java.net.URL
-import java.nio.charset.{Charset, CharsetDecoder, IllegalCharsetNameException, UnsupportedCharsetException}
+import java.nio.charset.{Charset, CharsetDecoder, IllegalCharsetNameException, StandardCharsets, UnsupportedCharsetException}
 
 import scala.collection.{immutable, mutable}
 import io.{AbstractFile, SourceReader}
@@ -36,13 +36,16 @@ import transform.patmat.PatternMatching
 import transform._
 import backend.{JavaPlatform, ScalaPrimitives}
 import backend.jvm.{BackendStats, GenBCode}
-import scala.language.postfixOps
 import scala.tools.nsc.ast.{TreeGen => AstTreeGen}
 import scala.tools.nsc.classpath._
 import scala.tools.nsc.profile.Profiler
+import scala.util.control.NonFatal
+import java.io.Closeable
+import scala.annotation.tailrec
 
 class Global(var currentSettings: Settings, reporter0: LegacyReporter)
     extends SymbolTable
+    with Closeable
     with CompilationUnits
     with Plugins
     with PhaseAssembly
@@ -280,8 +283,6 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
       body
   }
 
-  override def isDeveloper = settings.developer || super.isDeveloper
-
   /** This is for WARNINGS which should reach the ears of scala developers
    *  whenever they occur, but are not useful for normal users. They should
    *  be precise, explanatory, and infrequent. Please don't use this as a
@@ -397,12 +398,16 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
 
     def apply(unit: CompilationUnit): Unit
 
+    // run only the phases needed
+    protected def shouldSkipThisPhaseForJava: Boolean = {
+      this.id > (if (createJavadoc) currentRun.typerPhase.id
+      else currentRun.namerPhase.id)
+    }
+
     /** Is current phase cancelled on this unit? */
     def cancelled(unit: CompilationUnit) = {
-      // run the typer only if in `createJavadoc` mode
-      val maxJavaPhase = if (createJavadoc) currentRun.typerPhase.id else currentRun.namerPhase.id
       if (Thread.interrupted()) reporter.cancelled = true
-      reporter.cancelled || unit.isJava && this.id > maxJavaPhase
+      reporter.cancelled || unit.isJava && shouldSkipThisPhaseForJava
     }
 
     private def beforeUnit(unit: CompilationUnit): Unit = {
@@ -413,7 +418,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
         inform("[running phase " + name + " on " + unit + "]")
     }
 
-    @deprecated
+    @deprecated("Unused, inlined in applyPhase", since="2.13")
     final def withCurrentUnit(unit: CompilationUnit)(task: => Unit): Unit = {
       beforeUnit(unit)
       if (!cancelled(unit)) {
@@ -424,6 +429,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
     }
 
     @inline
+    @deprecated("Unused, see withCurrentUnit", since="2.13")
     final def withCurrentUnitNoLog(unit: CompilationUnit)(task: => Unit): Unit = {
       val unit0 = currentUnit
       try {
@@ -441,8 +447,10 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
         currentRun.informUnitStarting(this, unit)
         val unit0 = currentUnit
         currentRun.currentUnit = unit
+        currentRun.profiler.beforeUnit(phase, unit.source.file)
         try apply(unit)
         finally {
+          currentRun.profiler.afterUnit(phase, unit.source.file)
           currentRun.currentUnit = unit0
           currentRun.advanceUnit()
         }
@@ -752,7 +760,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
   private def phaseHelp(title: String, elliptically: Boolean, describe: SubComponent => String): String = {
     val Limit   = 16    // phase names should not be absurdly long
     val MaxCol  = 80    // because some of us edit on green screens
-    val maxName = phaseNames map (_.length) max
+    val maxName = phaseNames.map(_.length).max
     val width   = maxName min Limit
     val maxDesc = MaxCol - (width + 6)  // descriptions not novels
     val fmt     = if (settings.verbose || !elliptically) s"%${maxName}s  %2s  %s%n"
@@ -802,19 +810,18 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
   /** Returns List of (phase, value) pairs, including only those
    *  where the value compares unequal to the previous phase's value.
    */
-  def afterEachPhase[T](op: => T): List[(Phase, T)] = { // used in tests
+  def afterEachPhase[T](op: => T): List[(Phase, T)] = // used in tests
     phaseDescriptors.map(_.ownPhase).filterNot(_ eq NoPhase).foldLeft(List[(Phase, T)]()) { (res, ph) =>
       val value = exitingPhase(ph)(op)
       if (res.nonEmpty && res.head._2 == value) res
       else ((ph, value)) :: res
-    } reverse
-  }
+    }.reverse
 
   // ------------ REPL utilities ---------------------------------
 
   /** Extend classpath of `platform` and rescan updated packages. */
   def extendCompilerClassPath(urls: URL*): Unit = {
-    val urlClasspaths = urls.map(u => ClassPathFactory.newClassPath(AbstractFile.getURL(u), settings))
+    val urlClasspaths = urls.map(u => ClassPathFactory.newClassPath(AbstractFile.getURL(u), settings, closeableRegistry))
     val newClassPath = AggregateClassPath.createAggregate(platform.classPath +: urlClasspaths : _*)
     platform.currentClassPath = Some(newClassPath)
     invalidateClassPathEntries(urls.map(_.getPath): _*)
@@ -876,7 +883,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
       }
       entries(classPath) find matchesCanonical match {
         case Some(oldEntry) =>
-          Some(oldEntry -> ClassPathFactory.newClassPath(dir, settings))
+          Some(oldEntry -> ClassPathFactory.newClassPath(dir, settings, closeableRegistry))
         case None =>
           error(s"Error adding entry to classpath. During invalidation, no entry named $path in classpath $classPath")
           None
@@ -1107,6 +1114,11 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
 
   def newJavaUnitParser(unit: CompilationUnit): JavaUnitParser = new JavaUnitParser(unit)
 
+  override protected[scala] def currentRunProfilerBeforeCompletion(root: Symbol, associatedFile: AbstractFile): Unit =
+    curRun.profiler.beforeCompletion(root, associatedFile)
+  override protected[scala] def currentRunProfilerAfterCompletion(root: Symbol, associatedFile: AbstractFile): Unit =
+    curRun.profiler.afterCompletion(root, associatedFile)
+
   /** A Run is a single execution of the compiler on a set of units.
    */
   class Run extends RunContextApi with RunReporting with RunParsing {
@@ -1120,6 +1132,12 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
 
     val profiler: Profiler = Profiler(settings)
     keepPhaseStack = settings.log.isSetByUser
+
+    // We hit these checks regularly. They shouldn't change inside the same run, so cache the comparisons here.
+    val isScala212: Boolean = settings.isScala212
+    val isScala213: Boolean = settings.isScala213
+    val isScala214: Boolean = settings.isScala214
+    val isScala300: Boolean = settings.isScala300
 
     // used in sbt
     def uncheckedWarnings: List[(Position, String)]   = reporting.uncheckedWarnings.map{case (pos, (msg, since)) => (pos, msg)}
@@ -1225,18 +1243,17 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
       // doesn't select a unique phase, that might be surprising too.
       def checkPhaseSettings(including: Boolean, specs: Seq[String]*) = {
         def isRange(s: String) = s.forall(c => c.isDigit || c == '-')
-        def isSpecial(s: String) = (s == "all" || isRange(s))
-        val setting = new ss.PhasesSetting("fake","fake")
+        def isSpecial(s: String) = (s == "_" || isRange(s))
+        val tester = new ss.PhasesSetting("fake","fake")
         for (p <- specs.flatten.to(Set)) {
-          setting.value = List(p)
-          val count = (
-            if (including) first.iterator count (setting containsPhase _)
-            else phaseDescriptors count (setting contains _.phaseName)
-          )
+          tester.value = List(p)
+          val count =
+            if (including) first.iterator.count(tester.containsPhase(_))
+            else phaseDescriptors.count(pd => tester.contains(pd.phaseName))
           if (count == 0) warning(s"'$p' specifies no phase")
           if (count > 1 && !isSpecial(p)) warning(s"'$p' selects $count phases")
           if (!including && isSpecial(p)) globalError(s"-Yskip and -Ystop values must name phases: '$p'")
-          setting.clear()
+          tester.clear()
         }
       }
       // phases that are excluded; for historical reasons, these settings only select by phase name
@@ -1368,7 +1385,8 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
     // NOTE: Early initialized members temporarily typechecked before the enclosing class, see typedPrimaryConstrBody!
     //       Here we work around that wrinkle by claiming that a pre-initialized member is compiled in
     //       *every* run. This approximation works because this method is exclusively called with `this` == `currentRun`.
-    def compiles(sym: Symbol): Boolean =
+    @tailrec
+    final def compiles(sym: Symbol): Boolean =
       if (sym == NoSymbol) false
       else if (symSource.isDefinedAt(sym)) true
       else if (!sym.isTopLevel) compiles(sym.originalEnclosingTopLevelClassOrDummy)
@@ -1405,7 +1423,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
           case -1   => mkName(str)
           case idx  =>
             val phasePart = str drop (idx + 1)
-            settings.Yshow.tryToSetColon(phasePart split ',' toList)
+            settings.Yshow.tryToSetColon(phasePart.split(',').toList)
             mkName(str take idx)
         }
       }
@@ -1435,11 +1453,26 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
     /** Caching member symbols that are def-s in Definitions because they might change from Run to Run. */
     val runDefinitions: definitions.RunDefinitions = new definitions.RunDefinitions
 
+    private def printArgs(sources: List[SourceFile]): Unit =
+      settings.printArgs.valueSetByUser foreach { value =>
+        val argsFile = (settings.recreateArgs ::: sources.map(_.file.absolute.toString())).mkString("", "\n", "\n")
+        value match {
+          case "-" =>
+            reporter.echo(argsFile)
+          case pathString =>
+            import java.nio.file._
+            val path = Paths.get(pathString)
+            Files.write(path, argsFile.getBytes(StandardCharsets.UTF_8))
+            reporter.echo(s"Compiler arguments written to: $path")
+        }
+      }
+
     /** Compile list of source files,
      *  unless there is a problem already,
      *  such as a plugin was passed a bad option.
      */
     def compileSources(sources: List[SourceFile]): Unit = if (!reporter.hasErrors) {
+      printArgs(sources)
 
       def checkDeprecations() = {
         warnDeprecatedAndConflictingSettings()
@@ -1521,6 +1554,9 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
 
       reporting.summarizeErrors()
 
+      // val allNamesArray: Array[String] = allNames().map(_.toString).toArray.sorted
+      // allNamesArray.foreach(println(_))
+
       if (traceSymbolActivity)
         units map (_.body) foreach (traceSymbols recordSymbolsInTree _)
 
@@ -1548,6 +1584,8 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
 
       // Clear any sets or maps created via perRunCaches.
       perRunCaches.clearAll()
+      if (settings.verbose)
+        println("Name table size after compilation: " + nameTableSize + " chars")
     }
 
     /** Compile list of abstract files. */
@@ -1608,6 +1646,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
 
     /** Reset package class to state at typer (not sure what this is needed for?)
      */
+    @tailrec
     private def resetPackageClass(pclazz: Symbol): Unit = if (typerPhase != NoPhase) {
       enteringPhase(firstPhase) {
         pclazz.setInfo(enteringPhase(typerPhase)(pclazz.info))
@@ -1668,7 +1707,7 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
     val syms = findMemberFromRoot(fullName) match {
       // The name as given was not found, so we'll sift through every symbol in
       // the run looking for plausible matches.
-      case NoSymbol => phased(currentRun.symSource.keys map (sym => findNamedMember(fullName, sym)) filterNot (_ == NoSymbol) toList)
+      case NoSymbol => phased(currentRun.symSource.keys.map(findNamedMember(fullName, _)).filterNot(_ == NoSymbol).toList)
       // The name as given matched, so show only that.
       case sym      => List(sym)
     }
@@ -1685,6 +1724,13 @@ class Global(var currentSettings: Settings, reporter0: LegacyReporter)
   }
 
   def createJavadoc    = false
+
+  final lazy val closeableRegistry: CloseableRegistry = new CloseableRegistry
+
+  def close(): Unit = {
+    perRunCaches.clearAll()
+    closeableRegistry.close()
+  }
 }
 
 object Global {

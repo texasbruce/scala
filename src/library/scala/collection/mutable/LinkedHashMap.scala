@@ -14,6 +14,9 @@ package scala
 package collection
 package mutable
 
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.generic.DefaultSerializable
+
 
 /** $factoryInfo
  *  @define Coll `LinkedHashMap`
@@ -33,7 +36,6 @@ object LinkedHashMap extends MapFactory[LinkedHashMap] {
   def newBuilder[K, V] = new GrowableBuilder(empty[K, V])
 
   /** Class for the linked hash map entry, used internally.
-    *  @since 2.8
     */
   private[mutable] final class LinkedEntry[K, V](val key: K, var value: V)
     extends HashEntry[K, LinkedEntry[K, V]] {
@@ -61,11 +63,17 @@ class LinkedHashMap[K, V]
     with SeqMap[K, V]
     with MapOps[K, V, LinkedHashMap, LinkedHashMap[K, V]]
     with StrictOptimizedIterableOps[(K, V), Iterable, LinkedHashMap[K, V]]
-    with StrictOptimizedMapOps[K, V, LinkedHashMap, LinkedHashMap[K, V]] {
+    with StrictOptimizedMapOps[K, V, LinkedHashMap, LinkedHashMap[K, V]]
+    with MapFactoryDefaults[K, V, LinkedHashMap, Iterable]
+    with DefaultSerializable {
 
   override def mapFactory: MapFactory[LinkedHashMap] = LinkedHashMap
 
-  private[mutable] type Entry = LinkedHashMap.LinkedEntry[K, V]
+  // stepper / keyStepper / valueStepper are not overridden to use XTableStepper because that stepper
+  // would not return the elements in insertion order
+
+  private[collection] type Entry = LinkedHashMap.LinkedEntry[K, V]
+  private[collection] def _firstEntry: Entry = firstEntry
 
   @transient protected var firstEntry: Entry = null
   @transient protected var lastEntry: Entry = null
@@ -77,7 +85,7 @@ class LinkedHashMap[K, V]
   private def newHashTable =
     new HashTable[K, V, Entry] {
       def createNewEntry(key: K, value: V): Entry = {
-        val e = new Entry(key, value.asInstanceOf[V])
+        val e = new Entry(key, value)
         if (firstEntry eq null) firstEntry = e
         else { lastEntry.later = e; e.earlier = lastEntry }
         lastEntry = e
@@ -94,7 +102,22 @@ class LinkedHashMap[K, V]
 
     }
 
-  override def empty = LinkedHashMap.empty[K, V]
+  override def last: (K, V) = 
+    if (size > 0) (lastEntry.key, lastEntry.value) 
+    else throw new java.util.NoSuchElementException("Cannot call .last on empty LinkedHashMap")
+      
+  override def lastOption: Option[(K, V)] = 
+    if (size > 0) Some((lastEntry.key, lastEntry.value))
+    else None
+
+  override def head: (K, V) = 
+    if (size > 0) (firstEntry.key, firstEntry.value) 
+    else throw new java.util.NoSuchElementException("Cannot call .head on empty LinkedHashMap")
+      
+  override def headOption: Option[(K, V)] = 
+    if (size > 0) Some((firstEntry.key, firstEntry.value))
+    else None
+      
   override def size = table.tableSize
   override def knownSize: Int = size
   override def isEmpty: Boolean = table.tableSize == 0
@@ -167,6 +190,14 @@ class LinkedHashMap[K, V]
     var cur = firstEntry
     while (cur ne null) {
       f((cur.key, cur.value))
+      cur = cur.later
+    }
+  }
+
+  override def foreachEntry[U](f: (K, V) => U): Unit = {
+    var cur = firstEntry
+    while (cur ne null) {
+      f(cur.key, cur.value)
       cur = cur.later
     }
   }

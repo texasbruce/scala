@@ -13,6 +13,7 @@
 package scala.reflect.reify
 package phases
 
+import scala.annotation.tailrec
 import scala.tools.nsc.symtab.Flags._
 
 trait Reshape {
@@ -189,6 +190,7 @@ trait Reshape {
       CompoundTypeTree(Template(parents1, self, stats1))
     }
 
+    @tailrec
     private def toPreTyperTypedOrAnnotated(tree: Tree): Tree = tree match {
       case ty @ Typed(expr1, tpt) =>
         if (reifyDebug) println("reify typed: " + tree)
@@ -197,6 +199,7 @@ trait Reshape {
           case tpt => tpt
         }
         val annotatedArg = {
+          @tailrec
           def loop(tree: Tree): Tree = tree match {
             case annotated1 @ Annotated(ann, annotated2 @ Annotated(_, _)) => loop(annotated2)
             case annotated1 @ Annotated(ann, arg) => arg
@@ -243,7 +246,7 @@ trait Reshape {
       }
 
       def extractOriginal: PartialFunction[Tree, Tree] = { case Apply(Select(New(tpt), _), _) => tpt }
-      assert(extractOriginal.isDefinedAt(ann.original), showRaw(ann.original))
+      assert(extractOriginal.isDefinedAt(ann.original), s"$ann has unexpected original ${showRaw(ann.original)}" )
       New(TypeTree(ann.atp) setOriginal extractOriginal(ann.original), List(args))
     }
 
@@ -278,7 +281,10 @@ trait Reshape {
             var flags1 = flags & ~LOCAL
             if (!ddef.symbol.isPrivate) flags1 = flags1 & ~PRIVATE
             val privateWithin1 = ddef.mods.privateWithin
-            val annotations1 = accessors(vdef).foldLeft(annotations)((curr, acc) => curr ++ (acc.symbol.annotations map toPreTyperAnnotation))
+            val annotations1 =
+              accessors(vdef).foldLeft(annotations){ (curr, acc) =>
+                curr ++ (acc.symbol.annotations.filterNot(_ == UnmappableAnnotation ).map(toPreTyperAnnotation))
+              }
             Modifiers(flags1, privateWithin1, annotations1) setPositions mods.positions
           } else {
             mods

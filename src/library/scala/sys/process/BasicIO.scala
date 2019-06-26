@@ -77,7 +77,7 @@ object BasicIO {
   }
 
   private[process] trait Uncloseable extends Closeable {
-    final override def close(): Unit = { }
+    final override def close(): Unit = ()
   }
   private[process] object Uncloseable {
     def apply(in: InputStream): InputStream      = new FilterInputStream(in) with Uncloseable { }
@@ -195,6 +195,7 @@ object BasicIO {
   def processLinesFully(processLine: String => Unit)(readLine: () => String): Unit = {
     def working = (Thread.currentThread.isInterrupted == false)
     def halting = { Thread.currentThread.interrupt(); null }
+    @tailrec
     def readFully(): Unit =
       if (working) {
         val line =

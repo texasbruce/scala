@@ -13,8 +13,7 @@
 package scala
 package collection
 
-import scala.annotation.unchecked.uncheckedVariance
-import scala.collection.generic.DefaultSerializationProxy
+import scala.collection.generic.DefaultSerializable
 import scala.collection.mutable.StringBuilder
 import scala.language.higherKinds
 import scala.util.hashing.MurmurHash3
@@ -23,22 +22,10 @@ import scala.util.hashing.MurmurHash3
 trait Map[K, +V]
   extends Iterable[(K, V)]
     with MapOps[K, V, Map, Map[K, V]]
+    with MapFactoryDefaults[K, V, Map, Iterable]
     with Equals {
 
-  override protected def fromSpecific(coll: IterableOnce[(K, V)] @uncheckedVariance): MapCC[K, V] @uncheckedVariance = mapFactory.from(coll)
-  override protected def newSpecificBuilder: mutable.Builder[(K, V), MapCC[K, V]] @uncheckedVariance = mapFactory.newBuilder[K, V]
-
-  /**
-    * @note This operation '''has''' to be overridden by concrete collection classes to effectively
-    *       return a `MapFactory[MapCC]`. The implementation in `Map` only returns
-    *       a `MapFactory[Map]`, but the compiler will '''not''' throw an error if the
-    *       effective `MapCC` type constructor is more specific than `Map`.
-    *
-    * @return The factory of this collection.
-    */
-  def mapFactory: scala.collection.MapFactory[MapCC] = Map
-
-  def empty: MapCC[K, V] @uncheckedVariance = mapFactory.empty
+  def mapFactory: scala.collection.MapFactory[Map] = Map
 
   def canEqual(that: Any): Boolean = true
 
@@ -59,12 +46,10 @@ trait Map[K, +V]
 
   override def hashCode(): Int = MurmurHash3.mapHash(toIterable)
 
-  override protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(mapFactory.mapFactory[K, V], this)
-
   // These two methods are not in MapOps so that MapView is not forced to implement them
-  @deprecated("Use - or remove on an immutable Map", "2.13.0")
+  @deprecated("Use - or removed on an immutable Map", "2.13.0")
   def - (key: K): Map[K, V]
-  @deprecated("Use -- or removeAll on an immutable Map", "2.13.0")
+  @deprecated("Use -- or removedAll on an immutable Map", "2.13.0")
   def - (key1: K, key2: K, keys: K*): Map[K, V]
 
   override protected[this] def stringPrefix: String = "Map"
@@ -91,21 +76,42 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
 
   override def view: MapView[K, V] = new MapView.Id(this)
 
-  /**
-    * Type alias to `CC`. It is used to provide a default implementation of the `fromSpecific`
-    * and `newSpecificBuilder` operations.
-    *
-    * Due to the `@uncheckedVariance` annotation, usage of this type member can be unsound and is
-    * therefore not recommended.
-    */
-  protected type MapCC[KCC, VCC] = CC[KCC, VCC] @uncheckedVariance
+  /** Returns a [[Stepper]] for the keys of this map. See method [[stepper]]. */
+  def keyStepper[S <: Stepper[_]](implicit shape: StepperShape[K, S]): S = {
+    import convert.impl._
+    val s = shape.shape match {
+      case StepperShape.IntShape    => new IntIteratorStepper   (keysIterator.asInstanceOf[Iterator[Int]])
+      case StepperShape.LongShape   => new LongIteratorStepper  (keysIterator.asInstanceOf[Iterator[Long]])
+      case StepperShape.DoubleShape => new DoubleIteratorStepper(keysIterator.asInstanceOf[Iterator[Double]])
+      case _                        => shape.seqUnbox(new AnyIteratorStepper(keysIterator))
+    }
+    s.asInstanceOf[S]
+  }
+
+  /** Returns a [[Stepper]] for the values of this map. See method [[stepper]]. */
+  def valueStepper[S <: Stepper[_]](implicit shape: StepperShape[V, S]): S = {
+    import convert.impl._
+    val s = shape.shape match {
+      case StepperShape.IntShape    => new IntIteratorStepper   (valuesIterator.asInstanceOf[Iterator[Int]])
+      case StepperShape.LongShape   => new LongIteratorStepper  (valuesIterator.asInstanceOf[Iterator[Long]])
+      case StepperShape.DoubleShape => new DoubleIteratorStepper(valuesIterator.asInstanceOf[Iterator[Double]])
+      case _                        => shape.seqUnbox(new AnyIteratorStepper(valuesIterator))
+    }
+    s.asInstanceOf[S]
+  }
 
   /** Similar to `fromIterable`, but returns a Map collection type.
-    * Note that the return type is now `CC[K2, V2]` aka `MapCC[K2, V2]` rather than `IterableCC[(K2, V2)]`.
+    * Note that the return type is now `CC[K2, V2]`.
     */
   @`inline` protected final def mapFromIterable[K2, V2](it: Iterable[(K2, V2)]): CC[K2, V2] = mapFactory.from(it)
 
-  def mapFactory: MapFactory[MapCC]
+  /** The companion object of this map, providing various factory methods.
+    *
+    * @note When implementing a custom collection type and refining `CC` to the new type, this
+    *       method needs to be overridden to return a factory for the new type (the compiler will
+    *       issue an error otherwise).
+    */
+  def mapFactory: MapFactory[CC]
 
   /** Optionally returns the value associated with a key.
     *
@@ -122,9 +128,6 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
    *   @tparam  V1       the result type of the default computation.
    *   @return  the value associated with `key` if it exists,
    *            otherwise the result of the `default` computation.
-   *
-   *   @usecase def getOrElse(key: K, default: => V): V
-   *     @inheritdoc
    */
   def getOrElse[V1 >: V](key: K, default: => V1): V1 = get(key) match {
     case Some(v) => v
@@ -155,7 +158,7 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
 
   /** The implementation class of the set returned by `keySet`.
     */
-  protected class KeySet extends AbstractSet[K] with GenKeySet {
+  protected class KeySet extends AbstractSet[K] with GenKeySet with DefaultSerializable {
     def diff(that: Set[K]): Set[K] = fromSpecific(view.filterNot(that))
   }
 
@@ -198,6 +201,17 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
     val iter = MapOps.this.iterator
     def hasNext = iter.hasNext
     def next() = iter.next()._2
+  }
+
+  /** Apply `f` to each key/value pair for its side effects
+   *  Note: [U] parameter needed to help scalac's type inference.
+   */
+  def foreachEntry[U](f: (K, V) => U): Unit = {
+    val it = iterator
+    while (it.hasNext) {
+      val next = it.next()
+      f(next._1, next._2)
+    }
   }
 
   /** Filters this map by retaining only keys satisfying a predicate.
@@ -245,13 +259,6 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
     */
   def isDefinedAt(key: K): Boolean = contains(key)
 
-  /** The empty map of the same type as this map
-    * @return an empty map of type `Repr`.
-    */
-  def empty: C
-
-  override def withFilter(p: ((K, V)) => Boolean): MapOps.WithFilter[K, V, IterableCC, CC] = new MapOps.WithFilter(this, p)
-
   /** Builds a new map by applying a function to all elements of this $coll.
     *
     *  @param f      the function to apply to each element.
@@ -295,8 +302,10 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
     case _ => iterator.concat(suffix.iterator)
   })
 
+  // Not final because subclasses refine the result type, e.g. in SortedMap, the result type is
+  // SortedMap's CC, while Map's CC is fixed to Map
   /** Alias for `concat` */
-  /*@`inline` final*/ def ++ [V2 >: V](xs: collection.Iterable[(K, V2)]): CC[K, V2] = concat(xs)
+  /*@`inline` final*/ def ++ [V2 >: V](xs: collection.IterableOnce[(K, V2)]): CC[K, V2] = concat(xs)
 
   override def addString(sb: StringBuilder, start: String, sep: String, end: String): StringBuilder =
     iterator.map { case (k, v) => s"$k -> $v" }.addString(sb, start, sep, end)
@@ -314,6 +323,15 @@ trait MapOps[K, +V, +CC[_, _] <: IterableOps[_, AnyConstr, _], +C]
     lazy val keysSet = keys.toSet
     fromSpecific(this.view.filterKeys(k => !keysSet.contains(k)))
   }
+
+  @deprecated("Use ++ instead of ++: for collections of type Iterable", "2.13.0")
+  def ++: [V1 >: V](that: IterableOnce[(K,V1)]): CC[K,V1] = {
+    val thatIterable: Iterable[(K, V1)] = that match {
+      case that: Iterable[(K, V1)] => that
+      case that => View.from(that)
+    }
+    mapFactory.from(new View.Concat(toIterable, thatIterable))
+  }
 }
 
 object MapOps {
@@ -322,10 +340,11 @@ object MapOps {
     *
     * @define coll map collection
     */
+  @SerialVersionUID(3L)
   class WithFilter[K, +V, +IterableCC[_], +CC[_, _] <: IterableOps[_, AnyConstr, _]](
     self: MapOps[K, V, CC, _] with IterableOps[(K, V), IterableCC, _],
     p: ((K, V)) => Boolean
-  ) extends IterableOps.WithFilter[(K, V), IterableCC](self, p) {
+  ) extends IterableOps.WithFilter[(K, V), IterableCC](self, p) with Serializable {
 
     def map[K2, V2](f: ((K, V)) => (K2, V2)): CC[K2, V2] =
       self.mapFactory.from(new View.Map(filtered, f))
@@ -353,3 +372,4 @@ object Map extends MapFactory.Delegate[Map](immutable.Map) {
 /** Explicit instantiation of the `Map` trait to reduce class file size in subclasses. */
 @SerialVersionUID(3L)
 abstract class AbstractMap[K, +V] extends AbstractIterable[(K, V)] with Map[K, V]
+

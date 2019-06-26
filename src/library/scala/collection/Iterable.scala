@@ -13,12 +13,10 @@
 package scala
 package collection
 
-import scala.language.{higherKinds, implicitConversions}
+import scala.language.higherKinds
 import scala.annotation.unchecked.uncheckedVariance
 import scala.collection.mutable.Builder
-import java.lang.{String, UnsupportedOperationException}
-
-import scala.collection.generic.DefaultSerializationProxy
+import scala.collection.View.{LeftPartitionMapped, RightPartitionMapped}
 
 /** Base trait for generic collections.
   *
@@ -27,35 +25,19 @@ import scala.collection.generic.DefaultSerializationProxy
   * @define Coll `Iterable`
   * @define coll iterable collection
   */
-trait Iterable[+A] extends IterableOnce[A] with IterableOps[A, Iterable, Iterable[A]] with Serializable {
+trait Iterable[+A] extends IterableOnce[A]
+  with IterableOps[A, Iterable, Iterable[A]]
+  with IterableFactoryDefaults[A, Iterable] {
 
   // The collection itself
   final def toIterable: this.type = this
 
-  //TODO scalac generates an override for this in AbstractMap; Making it final leads to a VerifyError
-  protected def coll: this.type = this
+  final protected def coll: this.type = this
 
-  protected def fromSpecific(coll: IterableOnce[A @uncheckedVariance]): IterableCC[A] @uncheckedVariance = iterableFactory.from(coll)
-  protected def newSpecificBuilder: Builder[A, IterableCC[A]] @uncheckedVariance = iterableFactory.newBuilder[A]
-
-  /**
-    * @note This operation '''has''' to be overridden by concrete collection classes to effectively
-    *       return an `IterableFactory[IterableCC]`. The implementation in `Iterable` only returns
-    *       an `IterableFactory[Iterable]`, but the compiler will '''not''' throw an error if the
-    *       effective `IterableCC` type constructor is more specific than `Iterable`.
-    *
-    * @return The factory of this collection.
-    */
-  def iterableFactory: IterableFactory[IterableCC] = Iterable
+  def iterableFactory: IterableFactory[Iterable] = Iterable
 
   @deprecated("Iterable.seq always returns the iterable itself", "2.13.0")
   def seq: this.type = this
-
-  /** Create a proxy for Java serialization. The default implementation will serialize all elements and
-    * deserialize by using a builder for `CC` via `iterableFactory`. Override in subclasses if more data needs
-    * to be preserved or a more efficient implementation is available. Override to return `this` in order to
-    * use self-serialization instead of a proxy. */
-  protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(iterableFactory.iterableFactory, this)
 
   /** Defines the prefix of this object's `toString` representation.
     *
@@ -149,16 +131,6 @@ trait Iterable[+A] extends IterableOnce[A] with IterableOps[A, Iterable, Iterabl
   *  and may be nondeterministic.
   */
 trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with IterableOnceOps[A, CC, C] {
-
-  /**
-    * Type alias to `CC`. It is used to provide a default implementation of the `fromSpecific`
-    * and `newSpecificBuilder` operations.
-    *
-    * Due to the `@uncheckedVariance` annotation, usage of this type member can be unsound and is
-    * therefore not recommended.
-    */
-  protected type IterableCC[X] = CC[X] @uncheckedVariance
-
   /**
     * @return This collection as an `Iterable[A]`. No new collection will be built if `this` is already an `Iterable[A]`.
     */
@@ -188,6 +160,12 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     * the elements of the resulting collections). In other words, this methods defines
     * the evaluation model of the collection.
     *
+    * @note When implementing a custom collection type and refining `C` to the new type, this
+    *       method needs to be overridden (the compiler will issue an error otherwise). In the
+    *       common case where `C =:= CC[A]`, this can be done by mixing in the
+    *       [[IterableFactoryDefaults]] trait, which implements the method using
+    *       [[iterableFactory]].
+    *
     * @note As witnessed by the `@uncheckedVariance` annotation, using this method
     *       might be unsound. However, as long as it is called with an
     *       `Iterable[A]` obtained from `this` collection (as it is the case in the
@@ -195,14 +173,17 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     */
   protected def fromSpecific(coll: IterableOnce[A @uncheckedVariance]): C
 
-  /**
-    * @return The companion object of this ${coll}, providing various factory methods.
+  /** The companion object of this ${coll}, providing various factory methods.
+    *
+    * @note When implementing a custom collection type and refining `CC` to the new type, this
+    *       method needs to be overridden to return a factory for the new type (the compiler will
+    *       issue an error otherwise).
     */
-  def iterableFactory: IterableFactory[IterableCC]
+  def iterableFactory: IterableFactory[CC]
 
   @deprecated("Use iterableFactory instead", "2.13.0")
   @deprecatedOverriding("Use iterableFactory instead", "2.13.0")
-  @`inline` def companion: IterableFactory[IterableCC] = iterableFactory
+  @`inline` def companion: IterableFactory[CC] = iterableFactory
 
   /**
     * @return a strict builder for the same collection type.
@@ -212,11 +193,23 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     * As a consequence, operations should preferably be implemented with `fromSpecific`
     * instead of this method.
     *
+    * @note When implementing a custom collection type and refining `C` to the new type, this
+    *       method needs to be overridden (the compiler will issue an error otherwise). In the
+    *       common case where `C =:= CC[A]`, this can be done by mixing in the
+    *       [[IterableFactoryDefaults]] trait, which implements the method using
+    *       [[iterableFactory]].
+    *
     * @note As witnessed by the `@uncheckedVariance` annotation, using this method might
     *       be unsound. However, as long as the returned builder is only fed
     *       with `A` values taken from `this` instance, it is safe.
     */
   protected def newSpecificBuilder: Builder[A @uncheckedVariance, C]
+
+  /** The empty iterable of the same type as this iterable
+    *
+    * @return an empty iterable of type `C`.
+    */
+  def empty: C = fromSpecific(Nil)
 
   /** Selects the first element of this $coll.
     *  $orderDependent
@@ -266,9 +259,12 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *        x == 0       if this.size == otherSize
     *        x >  0       if this.size >  otherSize
     *   }}}
+    *
     *  The method as implemented here does not call `size` directly; its running time
-    *  is `O(size min _size)` instead of `O(size)`. The method should be overwritten
-    *  if computing `size` is cheap.
+    *  is `O(size min otherSize)` instead of `O(size)`. The method should be overridden
+    *  if computing `size` is cheap and `knownSize` returns `-1`.
+    *
+    *  @see [[sizeIs]]
     */
   def sizeCompare(otherSize: Int): Int = {
     if (otherSize < 0) 1
@@ -307,14 +303,16 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
   /** Compares the size of this $coll to the size of another `Iterable`.
     *
     *   @param   that the `Iterable` whose size is compared with this $coll's size.
+    *   @return  A value `x` where
     *   {{{
     *        x <  0       if this.size <  that.size
     *        x == 0       if this.size == that.size
     *        x >  0       if this.size >  that.size
     *   }}}
+    *
     *  The method as implemented here does not call `size` directly; its running time
     *  is `O(this.size min that.size)` instead of `O(this.size + that.size)`.
-    *  The method should be overwritten if computing `size` is cheap.
+    *  The method should be overridden if computing `size` is cheap and `knownSize` returns `-1`.
     */
   def sizeCompare(that: Iterable[_]): Int = {
     val thatKnownSize = that.knownSize
@@ -341,9 +339,8 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
 
   /** A view over a slice of the elements of this collection. */
   @deprecated("Use .view.slice(from, until) instead of .view(from, until)", "2.13.0")
-  @`inline` final def view(from: Int, until: Int): View[A] = view.slice(from, until)
+  def view(from: Int, until: Int): View[A] = view.slice(from, until)
 
-  //TODO Can there be a useful lazy implementation of this method? Otherwise mark it as being always strict
   /** Transposes this $coll of iterable collections into
     *  a $coll of ${coll}s.
     *
@@ -427,60 +424,44 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *  which requires only a single traversal.
     */
   def partition(p: A => Boolean): (C, C) = {
-    val pn = new View.Partition(this, p)
-    (fromSpecific(pn.first), fromSpecific(pn.second))
+    val first = new View.Filter(this, p, false)
+    val second = new View.Filter(this, p, true)
+    (fromSpecific(first), fromSpecific(second))
   }
 
-  /** Splits this $coll into two at a given position.
-    *  Note: `c splitAt n` is equivalent to (but possibly more efficient than)
-    *         `(c take n, c drop n)`.
-    *  $orderDependent
-    *
-    *  @param n the position at which to split.
-    *  @return  a pair of ${coll}s consisting of the first `n`
-    *           elements of this $coll, and the other elements.
-    */
-  def splitAt(n: Int): (C, C) = (take(n), drop(n))
+  override def splitAt(n: Int): (C, C) = (take(n), drop(n))
 
   def take(n: Int): C = fromSpecific(new View.Take(this, n))
 
-  /** A collection containing the last `n` elements of this collection.
-    * $willForceEvaluation
+  /** Selects the last ''n'' elements.
+    *  $orderDependent
+    *  @param  n    the number of elements to take from this $coll.
+    *  @return a $coll consisting only of the last `n` elements of this $coll,
+    *          or else the whole $coll, if it has less than `n` elements.
+    *          If `n` is negative, returns an empty $coll.
     */
-  def takeRight(n: Int): C = {
-    val b = newSpecificBuilder
-    b.sizeHintBounded(n, toIterable)
-    val lead = iterator drop n
-    val it = iterator
-    while (lead.hasNext) {
-      lead.next()
-      it.next()
-    }
-    while (it.hasNext) b += it.next()
-    b.result()
-  }
+  def takeRight(n: Int): C = fromSpecific(new View.TakeRight(this, n))
 
+  /** Takes longest prefix of elements that satisfy a predicate.
+    *  $orderDependent
+    *  @param   p  The predicate used to test elements.
+    *  @return  the longest prefix of this $coll whose elements all satisfy
+    *           the predicate `p`.
+    */
   def takeWhile(p: A => Boolean): C = fromSpecific(new View.TakeWhile(this, p))
 
   def span(p: A => Boolean): (C, C) = (takeWhile(p), dropWhile(p))
 
   def drop(n: Int): C = fromSpecific(new View.Drop(this, n))
 
-  /** The rest of the collection without its `n` last elements. For
-    *  linear, immutable collections this should avoid making a copy.
-    *  $willForceEvaluation
+  /** Selects all elements except last ''n'' ones.
+    *  $orderDependent
+    *  @param  n    the number of elements to drop from this $coll.
+    *  @return a $coll consisting of all elements of this $coll except the last `n` ones, or else the
+    *          empty $coll, if this $coll has less than `n` elements.
+    *          If `n` is negative, don't drop any elements.
     */
-  def dropRight(n: Int): C = {
-    val b = newSpecificBuilder
-    if (n >= 0) b.sizeHint(toIterable, delta = -n)
-    val lead = iterator drop n
-    val it = iterator
-    while (lead.hasNext) {
-      b += it.next()
-      lead.next()
-    }
-    b.result()
-  }
+  def dropRight(n: Int): C = fromSpecific(new View.DropRight(this, n))
 
   def dropWhile(p: A => Boolean): C = fromSpecific(new View.DropWhile(this, p))
 
@@ -496,26 +477,43 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
 
   /** Groups elements in fixed size blocks by passing a "sliding window"
     *  over them (as opposed to partitioning them, as is done in `grouped`.)
-    *  The "sliding window" step is set to one.
+    *
+    *  An empty collection returns an empty iterator, and a non-empty
+    *  collection containing fewer elements than the window size returns
+    *  an iterator that will produce the original collection as its only
+    *  element.
     *  @see [[scala.collection.Iterator]], method `sliding`
     *
     *  @param size the number of elements per group
-    *  @return An iterator producing ${coll}s of size `size`, except the
-    *          last element (which may be the only element) will be truncated
-    *          if there are fewer than `size` elements remaining to be grouped.
+    *  @return An iterator producing ${coll}s of size `size`, except for a
+    *          non-empty collection with less than `size` elements, which
+    *          returns an iterator that produces the source collection itself
+    *          as its only element.
+    *  @example `List().sliding(2) = empty iterator`
+    *  @example `List(1).sliding(2) = Iterator(List(1))`
+    *  @example `List(1, 2).sliding(2) = Iterator(List(1, 2))`
+    *  @example `List(1, 2, 3).sliding(2) = Iterator(List(1, 2), List(2, 3))`
     */
   def sliding(size: Int): Iterator[C] = sliding(size, 1)
 
   /** Groups elements in fixed size blocks by passing a "sliding window"
     *  over them (as opposed to partitioning them, as is done in grouped.)
+    *
+    *  The returned iterator will be empty when called on an empty collection.
+    *  The last element the iterator produces may be smaller than the window
+    *  size when the original collection isn't exhausted by the window before
+    *  it and its last element isn't skipped by the step before it.
+    *
     *  @see [[scala.collection.Iterator]], method `sliding`
     *
     *  @param size the number of elements per group
     *  @param step the distance between the first elements of successive
     *         groups
-    *  @return An iterator producing ${coll}s of size `size`, except the
-    *          last element (which may be the only element) will be truncated
+    *  @return An iterator producing ${coll}s of size `size`, except the last
+    *          element (which may be the only element) will be smaller
     *          if there are fewer than `size` elements remaining to be grouped.
+    *  @example `List(1, 2, 3, 4, 5).sliding(2, 2) = Iterator(List(1, 2), List(3, 4), List(5))`
+    *  @example `List(1, 2, 3, 4, 5, 6).sliding(2, 3) = Iterator(List(1, 2), List(4, 5))` 
     */
   def sliding(size: Int, step: Int): Iterator[C] =
     iterator.sliding(size, step).map(fromSpecific)
@@ -526,7 +524,9 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     drop(1)
   }
 
-  /** The initial part of the collection without its last element. */
+  /** The initial part of the collection without its last element.
+    * $willForceEvaluation
+    */
   def init: C = {
     if (isEmpty) throw new UnsupportedOperationException
     dropRight(1)
@@ -612,6 +612,8 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *   def occurrences[A](as: Seq[A]): Map[A, Int] =
     *     as.groupMapReduce(identity)(_ => 1)(_ + _)
     * }}}
+    *
+    * $willForceEvaluation
     */
   def groupMapReduce[K, B](key: A => K)(f: A => B)(reduce: (B, B) => B): immutable.Map[K, B] = {
     val m = mutable.Map.empty[K, B]
@@ -637,7 +639,6 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *
     *  @return           a new $coll containing the prefix scan of the elements in this $coll
     */
-  @deprecated("Use scanLeft instead", "2.13.0")
   def scan[B >: A](z: B)(op: (B, B) => B): CC[B] = scanLeft(z)(op)
 
   def scanLeft[B](z: B)(op: (B, A) => B): CC[B] = iterableFactory.from(new View.ScanLeft(this, z, op))
@@ -646,6 +647,7 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *  The head of the collection is the last cumulative result.
     *  $willNotTerminateInf
     *  $orderDependent
+    *  $willForceEvaluation
     *
     *  Example:
     *  {{{
@@ -677,12 +679,13 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
   def collect[B](pf: PartialFunction[A, B]): CC[B] =
     iterableFactory.from(new View.Collect(this, pf))
 
-  /** A pair of ${coll}s, first, consisting of the values that are produced by `f` applied to this $coll elements contained in [[scala.util.Left]] and, second,
-    *  all the values contained in [[scala.util.Right]].
+  /** Applies a function `f` to each element of the $coll and returns a pair of ${coll}s: the first one
+    *  made of those values returned by `f` that were wrapped in [[scala.util.Left]], and the second
+    *  one made of those wrapped in [[scala.util.Right]].
     *
     *  Example:
     *  {{{
-    *    val xs = $Coll(1, "one", 2, "two", 3, "three") partitionWith {
+    *    val xs = $Coll(1, "one", 2, "two", 3, "three") partitionMap {
     *     case i: Int => Left(i)
     *     case s: String => Right(s)
     *    }
@@ -690,16 +693,17 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *    //        $Coll(one, two, three))
     *  }}}
     *
-    *  @tparam A1         element type of the first resulting collection
-    *  @tparam A2         element type of the second resulting collection
-    *  @param f          split function that map the element of the $coll into an [[scala.util.Either]][A1, A2]
+    *  @tparam A1  the element type of the first resulting collection
+    *  @tparam A2  the element type of the second resulting collection
+    *  @param f    the 'split function' mapping the elements of this $coll to an [[scala.util.Either]]
     *
-    *  @return           a pair of ${coll}s, first, consisting of the values that are produced by `f` applied to this $coll
-    *               elements contained in [[scala.util.Left]] and, second, all the values contained in [[scala.util.Right]].
+    *  @return     a pair of ${coll}s: the first one made of those values returned by `f` that were wrapped in [[scala.util.Left]], 
+    *              and the second one made of those wrapped in [[scala.util.Right]].
     */
-  def partitionWith[A1, A2](f: A => Either[A1, A2]): (CC[A1], CC[A2]) = {
-    val mp = new View.PartitionWith(this, f)
-    (iterableFactory.from(mp.left), iterableFactory.from(mp.right))
+  def partitionMap[A1, A2](f: A => Either[A1, A2]): (CC[A1], CC[A2]) = {
+    val left: View[A1] = new LeftPartitionMapped(this, f)
+    val right: View[A2] = new RightPartitionMapped(this, f)
+    (iterableFactory.from(left), iterableFactory.from(right))
   }
 
   /** Returns a new $coll containing the elements from the left hand operand followed by the elements from the
@@ -771,8 +775,9 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *                half of each element pair of this $coll.
     */
   def unzip[A1, A2](implicit asPair: A => (A1, A2)): (CC[A1], CC[A2]) = {
-    val unzipped = new View.Unzip(this)
-    (iterableFactory.from(unzipped.first), iterableFactory.from(unzipped.second))
+    val first: View[A1] = new View.Map[A, A1](this, asPair(_)._1)
+    val second: View[A2] = new View.Map[A, A2](this, asPair(_)._2)
+    (iterableFactory.from(first), iterableFactory.from(second))
   }
 
   /** Converts this $coll of triples into three collections of the first, second,
@@ -797,8 +802,10 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *                   third member of each element triple of this $coll.
     */
   def unzip3[A1, A2, A3](implicit asTriple: A => (A1, A2, A3)): (CC[A1], CC[A2], CC[A3]) = {
-    val unzipped = new View.Unzip3(this)
-    (iterableFactory.from(unzipped.first), iterableFactory.from(unzipped.second), iterableFactory.from(unzipped.third))
+    val first: View[A1] = new View.Map[A, A1](this, asTriple(_)._1)
+    val second: View[A2] = new View.Map[A, A2](this, asTriple(_)._2)
+    val third: View[A3] = new View.Map[A, A3](this, asTriple(_)._3)
+    (iterableFactory.from(first), iterableFactory.from(second), iterableFactory.from(third))
   }
 
   /** Iterates over the tails of this $coll. The first value will be this
@@ -814,22 +821,26 @@ trait IterableOps[+A, +CC[_], +C] extends Any with IterableOnce[A] with Iterable
     *  $coll and the final one will be an empty $coll, with the intervening
     *  values the results of successive applications of `init`.
     *
+    *  $willForceEvaluation
+    *
     *  @return  an iterator over all the inits of this $coll
     *  @example  `List(1,2,3).inits = Iterator(List(1,2,3), List(1,2), List(1), Nil)`
     */
   def inits: Iterator[C] = iterateUntilEmpty(_.init)
 
+  override def tapEach[U](f: A => U): C = fromSpecific(new View.Map(this, { a: A => f(a); a }))
+
   // A helper for tails and inits.
   private[this] def iterateUntilEmpty(f: Iterable[A] => Iterable[A]): Iterator[C] = {
-    val it = Iterator.iterate(toIterable)(f).takeWhile(x => !x.isEmpty)
+    val it = Iterator.iterate(toIterable)(f).takeWhile(_.nonEmpty)
     (it ++ Iterator.single(Iterable.empty)).map(fromSpecific)
   }
 
-  @deprecated("Use xs ++ ys instead of ys ++: xs for xs of type Iterable", "2.13.0")
-  def ++:[B >: A](that: IterableOnce[B]): IterableCC[B] =
-    (iterableFactory.from(that).asInstanceOf[Iterable[B]] ++ coll.asInstanceOf[Iterable[B]]).asInstanceOf[IterableCC[B]]
-    // These casts are needed because C and CC do not have the proper constraints.
-    // Adding those constraints would require a lot of boilerplate in many classes.
+  @deprecated("Use ++ instead of ++: for collections of type Iterable", "2.13.0")
+  def ++:[B >: A](that: IterableOnce[B]): CC[B] = iterableFactory.from(that match {
+    case xs: Iterable[B] => new View.Concat(xs, this)
+    case _ => that.iterator ++ iterator
+  })
 }
 
 object IterableOps {
@@ -862,10 +873,11 @@ object IterableOps {
     *
     * @define coll collection
     */
+  @SerialVersionUID(3L)
   class WithFilter[+A, +CC[_]](
     self: IterableOps[A, CC, _],
     p: A => Boolean
-  ) extends collection.WithFilter[A, CC] {
+  ) extends collection.WithFilter[A, CC] with Serializable {
 
     protected def filtered: Iterable[A] =
       new View.Filter(self, p, isFlipped = false)
@@ -906,5 +918,110 @@ object Iterable extends IterableFactory.Delegate[Iterable](immutable.Iterable) {
 }
 
 /** Explicit instantiation of the `Iterable` trait to reduce class file size in subclasses. */
-@SerialVersionUID(3L)
 abstract class AbstractIterable[+A] extends Iterable[A]
+
+/** This trait provides default implementations for the factory methods `fromSpecific` and
+  * `newSpecificBuilder` that need to be refined when implementing a collection type that refines
+  * the `CC` and `C` type parameters.
+  *
+  * The default implementations in this trait can be used in the common case when `CC[A]` is the
+  * same as `C`.
+  */
+trait IterableFactoryDefaults[+A, +CC[x] <: IterableOps[x, CC, CC[x]]] extends IterableOps[A, CC, CC[A @uncheckedVariance]] {
+  protected def fromSpecific(coll: IterableOnce[A @uncheckedVariance]): CC[A @uncheckedVariance] = iterableFactory.from(coll)
+  protected def newSpecificBuilder: Builder[A @uncheckedVariance, CC[A @uncheckedVariance]] = iterableFactory.newBuilder[A]
+
+  // overridden for efficiency, since we know CC[A] =:= C
+  override def empty: CC[A @uncheckedVariance] = iterableFactory.empty
+}
+
+/** This trait provides default implementations for the factory methods `fromSpecific` and
+  * `newSpecificBuilder` that need to be refined when implementing a collection type that refines
+  * the `CC` and `C` type parameters. It is used for collections that have an additional constraint,
+  * expressed by the `evidenceIterableFactory` method.
+  *
+  * The default implementations in this trait can be used in the common case when `CC[A]` is the
+  * same as `C`.
+  */
+trait EvidenceIterableFactoryDefaults[+A, +CC[x] <: IterableOps[x, CC, CC[x]], Ev[_]] extends IterableOps[A, CC, CC[A @uncheckedVariance]] {
+  protected def evidenceIterableFactory: EvidenceIterableFactory[CC, Ev]
+  implicit protected def iterableEvidence: Ev[A @uncheckedVariance]
+  override protected def fromSpecific(coll: IterableOnce[A @uncheckedVariance]): CC[A @uncheckedVariance] = evidenceIterableFactory.from(coll)
+  override protected def newSpecificBuilder: Builder[A @uncheckedVariance, CC[A @uncheckedVariance]] = evidenceIterableFactory.newBuilder[A]
+  override def empty: CC[A @uncheckedVariance] = evidenceIterableFactory.empty
+}
+
+/** This trait provides default implementations for the factory methods `fromSpecific` and
+  * `newSpecificBuilder` that need to be refined when implementing a collection type that refines
+  * the `CC` and `C` type parameters. It is used for sorted sets.
+  *
+  * Note that in sorted sets, the `CC` type of the set is not the same as the `CC` type for the
+  * underlying iterable (which is fixed to `Set` in [[SortedSetOps]]). This trait has therefore
+  * two type parameters `CC` and `WithFilterCC`. The `withFilter` method inherited from
+  * `IterableOps` is overridden with a compatible default implementation.
+  *
+  * The default implementations in this trait can be used in the common case when `CC[A]` is the
+  * same as `C`.
+  */
+trait SortedSetFactoryDefaults[+A,
+    +CC[X] <: SortedSet[X] with SortedSetOps[X, CC, CC[X]],
+    +WithFilterCC[x] <: IterableOps[x, WithFilterCC, WithFilterCC[x]] with Set[x]] extends SortedSetOps[A @uncheckedVariance, CC, CC[A @uncheckedVariance]] {
+  self: IterableOps[A, WithFilterCC, _] =>
+
+  override protected def fromSpecific(coll: IterableOnce[A @uncheckedVariance]): CC[A @uncheckedVariance]    = sortedIterableFactory.from(coll)(ordering)
+  override protected def newSpecificBuilder: mutable.Builder[A @uncheckedVariance, CC[A @uncheckedVariance]] = sortedIterableFactory.newBuilder[A](ordering)
+  override def empty: CC[A @uncheckedVariance] = sortedIterableFactory.empty(ordering)
+
+  override def withFilter(p: A => Boolean): SortedSetOps.WithFilter[A, WithFilterCC, CC] =
+    new SortedSetOps.WithFilter[A, WithFilterCC, CC](this, p)
+}
+
+
+/** This trait provides default implementations for the factory methods `fromSpecific` and
+  * `newSpecificBuilder` that need to be refined when implementing a collection type that refines
+  * the `CC` and `C` type parameters. It is used for maps.
+  *
+  * Note that in maps, the `CC` type of the map is not the same as the `CC` type for the
+  * underlying iterable (which is fixed to `Map` in [[MapOps]]). This trait has therefore
+  * two type parameters `CC` and `WithFilterCC`. The `withFilter` method inherited from
+  * `IterableOps` is overridden with a compatible default implementation.
+  *
+  * The default implementations in this trait can be used in the common case when `CC[A]` is the
+  * same as `C`.
+  */
+trait MapFactoryDefaults[K, +V,
+    +CC[x, y] <: IterableOps[(x, y), Iterable, Iterable[(x, y)]],
+    +WithFilterCC[x] <: IterableOps[x, WithFilterCC, WithFilterCC[x]] with Iterable[x]] extends MapOps[K, V, CC, CC[K, V @uncheckedVariance]] with IterableOps[(K, V), WithFilterCC, CC[K, V @uncheckedVariance]] {
+  override protected def fromSpecific(coll: IterableOnce[(K, V @uncheckedVariance)]): CC[K, V @uncheckedVariance] = mapFactory.from(coll)
+  override protected def newSpecificBuilder: mutable.Builder[(K, V @uncheckedVariance), CC[K, V @uncheckedVariance]] = mapFactory.newBuilder[K, V]
+  override def empty: CC[K, V @uncheckedVariance] = mapFactory.empty
+
+  override def withFilter(p: ((K, V)) => Boolean): MapOps.WithFilter[K, V, WithFilterCC, CC] =
+    new MapOps.WithFilter[K, V, WithFilterCC, CC](this, p)
+}
+
+/** This trait provides default implementations for the factory methods `fromSpecific` and
+  * `newSpecificBuilder` that need to be refined when implementing a collection type that refines
+  * the `CC` and `C` type parameters. It is used for sorted maps.
+  *
+  * Note that in sorted maps, the `CC` type of the map is not the same as the `CC` type for the
+  * underlying map (which is fixed to `Map` in [[SortedMapOps]]). This trait has therefore
+  * three type parameters `CC`, `WithFilterCC` and `UnsortedCC`. The `withFilter` method inherited
+  * from `IterableOps` is overridden with a compatible default implementation.
+  *
+  * The default implementations in this trait can be used in the common case when `CC[A]` is the
+  * same as `C`.
+  */
+trait SortedMapFactoryDefaults[K, +V,
+    +CC[x, y] <:  Map[x, y] with SortedMapOps[x, y, CC, CC[x, y]] with UnsortedCC[x, y],
+    +WithFilterCC[x] <: IterableOps[x, WithFilterCC, WithFilterCC[x]] with Iterable[x],
+    +UnsortedCC[x, y] <: Map[x, y]] extends SortedMapOps[K, V, CC, CC[K, V @uncheckedVariance]] with MapOps[K, V, UnsortedCC, CC[K, V @uncheckedVariance]] {
+  self: IterableOps[(K, V), WithFilterCC, _] =>
+
+  override def empty: CC[K, V @uncheckedVariance] = sortedMapFactory.empty(ordering)
+  override protected def fromSpecific(coll: IterableOnce[(K, V @uncheckedVariance)]): CC[K, V @uncheckedVariance] = sortedMapFactory.from(coll)(ordering)
+  override protected def newSpecificBuilder: mutable.Builder[(K, V @uncheckedVariance), CC[K, V @uncheckedVariance]] = sortedMapFactory.newBuilder[K, V](ordering)
+
+  override def withFilter(p: ((K, V)) => Boolean): collection.SortedMapOps.WithFilter[K, V, WithFilterCC, UnsortedCC, CC] =
+    new collection.SortedMapOps.WithFilter[K, V, WithFilterCC, UnsortedCC, CC](this, p)
+}

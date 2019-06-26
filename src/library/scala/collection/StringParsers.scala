@@ -17,7 +17,7 @@ import scala.annotation.tailrec
 
 /** A module containing the implementations of parsers from strings to numeric types, and boolean
  */
-final private[scala] object StringParsers {
+private[scala] object StringParsers {
 
   //compile-time constant helpers
 
@@ -178,6 +178,7 @@ final private[scala] object StringParsers {
     //some utilities for working with index bounds into the original string
     @inline
     def forAllBetween(start: Int, end: Int, pred: Char => Boolean): Boolean = {
+      @tailrec
       def rec(i: Int): Boolean = i >= end || pred(format.charAt(i)) && rec(i + 1)
       rec(start)
     }

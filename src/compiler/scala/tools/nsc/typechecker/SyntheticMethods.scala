@@ -13,8 +13,6 @@
 package scala.tools.nsc
 package typechecker
 
-import scala.language.postfixOps
-
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
@@ -71,7 +69,7 @@ trait SyntheticMethods extends ast.TreeDSL {
    */
   def addSyntheticMethods(templ: Template, clazz0: Symbol, context: Context): Template = {
     val syntheticsOk = (phase.id <= currentRun.typerPhase.id) && {
-      symbolsToSynthesize(clazz0) filter (_ matchingSymbol clazz0.info isSynthetic) match {
+      symbolsToSynthesize(clazz0).filter(_.matchingSymbol(clazz0.info).isSynthetic) match {
         case Nil  => true
         case syms => log("Not adding synthetic methods: already has " + syms.mkString(", ")) ; false
       }
@@ -188,7 +186,9 @@ trait SyntheticMethods extends ast.TreeDSL {
 
       val otherName = freshTermName(clazz.name + "$")(freshNameCreatorFor(context))
       val otherSym  = eqmeth.newValue(otherName, eqmeth.pos, SYNTHETIC) setInfo clazz.tpe
-      val pairwise  = accessors collect {
+      //compare primitive fields first, slow equality checks of non-primitive fields can be skipped when primitives differ
+      val accessorsParts = accessors.partition(x => isPrimitiveValueType(x.info.resultType))
+      val pairwise  = (accessorsParts._1 ++ accessorsParts._2) collect {
         case acc if usefulEquality(acc) =>
           fn(Select(mkThis, acc), acc.tpe member nme.EQ, Select(Ident(otherSym), acc))
       }
@@ -256,23 +256,31 @@ trait SyntheticMethods extends ast.TreeDSL {
 
     // methods for both classes and objects
     def productMethods: List[(Symbol, () => Tree)] = {
+      List(
+        Product_productPrefix -> (() => constantNullary(nme.productPrefix, clazz.name.decode)),
+        Product_productArity -> (() => constantNullary(nme.productArity, arity)),
+        Product_productElement -> (() => perElementMethod(nme.productElement, AnyTpe)(mkThisSelect)),
+        Product_iterator -> (() => productIteratorMethod),
+        Product_canEqual -> (() => canEqualMethod)
+      )
+    }
+
+    def productClassMethods: List[(Symbol, () => Tree)] = {
+      // Classes get productElementName but case objects do not.
+      // For a case object the correct behaviour (i.e. to throw an IOOBE)
+      // is already provided by the default implementation in the Product trait.
+
+      // Support running the compiler with an older library on the classpath
       def elementName: List[(Symbol, () => Tree)] = Product_productElementName match {
         case NoSymbol => Nil
         case sym => (sym, () => productElementNameMethod) :: Nil
       }
+
       List(
-        List(
-          Product_productPrefix       -> (() => constantNullary(nme.productPrefix, clazz.name.decode)),
-          Product_productArity        -> (() => constantNullary(nme.productArity, arity)),
-          Product_productElement      -> (() => perElementMethod(nme.productElement, AnyTpe)(mkThisSelect))
-        ),
-        elementName,
-        List(
-          Product_iterator            -> (() => productIteratorMethod),
-          Product_canEqual            -> (() => canEqualMethod)
-        )
-      )
-    }.flatten
+        productMethods,
+        elementName
+      ).flatten
+    }
 
     def hashcodeImplementation(sym: Symbol): Tree = {
       sym.tpe.finalResultType.typeSymbol match {
@@ -291,6 +299,11 @@ trait SyntheticMethods extends ast.TreeDSL {
       createMethod(nme.hashCode_, Nil, IntTpe) { m =>
         val accumulator = m.newVariable(newTermName("acc"), m.pos, SYNTHETIC) setInfo IntTpe
         val valdef      = ValDef(accumulator, Literal(Constant(0xcafebabe)))
+        val mixPrefix   =
+          Assign(
+            Ident(accumulator),
+            callStaticsMethod("mix")(Ident(accumulator),
+              Apply(gen.mkAttributedSelect(gen.mkAttributedSelect(mkThis, Product_productPrefix), Object_hashCode), Nil)))
         val mixes       = accessors map (acc =>
           Assign(
             Ident(accumulator),
@@ -299,7 +312,7 @@ trait SyntheticMethods extends ast.TreeDSL {
         )
         val finish = callStaticsMethod("finalizeHash")(Ident(accumulator), Literal(Constant(arity)))
 
-        Block(valdef :: mixes, finish)
+        Block(valdef :: mixPrefix :: mixes, finish)
       }
     }
     def chooseHashcode = {
@@ -314,13 +327,13 @@ trait SyntheticMethods extends ast.TreeDSL {
       Any_equals -> (() => equalsDerivedValueClassMethod)
     )
 
-    def caseClassMethods = productMethods ++ /*productNMethods ++*/ Seq(
+    def caseClassMethods = productClassMethods ++ /*productNMethods ++*/ Seq(
       Object_hashCode -> (() => chooseHashcode),
       Object_toString -> (() => forwardToRuntime(Object_toString)),
       Object_equals   -> (() => equalsCaseClassMethod)
     )
 
-    def valueCaseClassMethods = productMethods ++ /*productNMethods ++*/ valueClassMethods ++ Seq(
+    def valueCaseClassMethods = productClassMethods ++ /*productNMethods ++*/ valueClassMethods ++ Seq(
       Any_toString -> (() => forwardToRuntime(Object_toString))
     )
 

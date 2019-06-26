@@ -34,6 +34,20 @@ package api
  *  In this example, a [[scala.reflect.api.Types#TypeRef]] is returned, which corresponds to the type constructor `List`
  *  applied to the type argument `Int`.
  *
+ *  In the case of a generic type, you can also combine it with other types
+ *  using [[scala.reflect.api.Types#appliedType]]. For example:
+ *
+ *  {{{
+ *    scala> val intType = typeOf[Int]
+ *    intType: reflect.runtime.universe.Type = Int
+ *
+ *    scala> val listType = typeOf[List[_]]
+ *    listType: reflect.runtime.universe.Type = List[_]
+ *
+ *    scala> appliedType(listType.typeConstructor, intType)
+ *    res0: reflect.runtime.universe.Type = List[Int]
+ *  }}}
+ *
  *  ''Note:'' Method `typeOf` does not work for types with type parameters, such as `typeOf[List[A]]` where `A` is
  *  a type parameter. In this case, use [[scala.reflect.api.TypeTags#weakTypeOf]] instead.
  *
@@ -60,7 +74,6 @@ package api
  *  @groupname TypeCreators Types - Creation
  *  @groupname TypeOps      Types - Operations
  *  @group ReflectionAPI
- *
  *  @contentDiagram hideNodes "*Api"
  */
 trait Types {
@@ -497,7 +510,7 @@ trait Types {
     def sym: Symbol
   }
   /** The `SuperType` type is not directly written, but arises when `C.super` is used
-   *  as a prefix in a `TypeRef` or `SingleType`. It's internal presentation is
+   *  as a prefix in a `TypeRef` or `SingleType`. Its internal presentation is
    *  {{{
    *     SuperType(thistpe, supertpe)
    *  }}}
@@ -514,7 +527,7 @@ trait Types {
    */
   val SuperType: SuperTypeExtractor
 
-  /** An extractor class to create and pattern match with syntax `SingleType(thistpe, supertpe)`
+  /** An extractor class to create and pattern match with syntax `SuperType(thistpe, supertpe)`
    *  @group Extractors
    */
   abstract class SuperTypeExtractor {
@@ -1036,7 +1049,21 @@ trait Types {
    */
   def glb(ts: List[Type]): Type
 
-  /** A creator for type applications
+  /** A creator for type applications.
+   *
+   *  Useful to combine and create types out of generic ones. For example:
+   *
+   *  {{{
+   *    scala> val boolType = typeOf[Boolean]
+   *    boolType: reflect.runtime.universe.Type = Boolean
+   *
+   *    scala> val optionType = typeOf[Option[_]]
+   *    optionType: reflect.runtime.universe.Type = Option[_]
+   *
+   *    scala> appliedType(optionType.typeConstructor, boolType)
+   *    res0: reflect.runtime.universe.Type = Option[Boolean]
+   *  }}}
+   *
    *  @group TypeOps
    */
   def appliedType(tycon: Type, args: List[Type]): Type

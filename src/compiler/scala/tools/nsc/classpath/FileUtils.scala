@@ -15,7 +15,7 @@ package scala.tools.nsc.classpath
 import java.io.{File => JFile, FileFilter}
 import java.net.URL
 import scala.reflect.internal.FatalError
-import scala.reflect.io.AbstractFile
+import scala.reflect.io.{AbstractFile, ZipArchive}
 
 /**
  * Common methods related to Java files and abstract files used in the context of classpath
@@ -24,12 +24,12 @@ object FileUtils {
   implicit class AbstractFileOps(val file: AbstractFile) extends AnyVal {
     def isPackage: Boolean = file.isDirectory && mayBeValidPackage(file.name)
 
-    def isClass: Boolean = !file.isDirectory && file.hasExtension("class")
+    def isClass: Boolean = !file.isDirectory && (file.hasExtension("class") || file.hasExtension("sig"))
 
     def isScalaOrJavaSource: Boolean = !file.isDirectory && (file.hasExtension("scala") || file.hasExtension("java"))
 
     // TODO do we need to check also other files using ZipMagicNumber like in scala.tools.nsc.io.Jar.isJarOrZip?
-    def isJarOrZip: Boolean = file.hasExtension("jar") || file.hasExtension("zip")
+    def isJarOrZip: Boolean = file.hasExtension("jar") || file.hasExtension("zip") || file.isInstanceOf[ZipArchive]
 
     /**
      * Safe method returning a sequence containing one URL representing this file, when underlying file exists,

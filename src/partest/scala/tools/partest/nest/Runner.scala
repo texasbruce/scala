@@ -437,7 +437,7 @@ class Runner(val testInfo: TestInfo, val suiteRunner: AbstractRunner) {
 
   /** Grouped files in group order, and lex order within each group. */
   def groupedFiles(sources: List[File]): List[List[File]] = (
-    if (sources.tail.nonEmpty) {
+    if (sources.sizeIs > 1) {
       val grouped = sources groupBy (_.group)
       grouped.keys.toList.sorted map (k => grouped(k) sortBy (_.getName))
     }
@@ -653,28 +653,9 @@ class Runner(val testInfo: TestInfo, val suiteRunner: AbstractRunner) {
 
   private def decompileClass(clazz: Class[_], isPackageObject: Boolean): String = {
     import scala.tools.scalap
+    import scalap.scalax.rules.scalasig.ByteCode
 
-    // TODO: remove use of reflection once Scala 2.11.0-RC1 is out
-    // have to use reflection to work on both 2.11.0-M8 and 2.11.0-RC1.
-    // Once we require only 2.11.0-RC1, replace the following block by:
-    // import scalap.scalax.rules.scalasig.ByteCode
-    // ByteCode forClass clazz bytes
-    val bytes = {
-      import scala.language.{reflectiveCalls, existentials}
-      type ByteCode       = { def bytes: Array[Byte] }
-      type ByteCodeModule = { def forClass(clazz: Class[_]): ByteCode }
-      val ByteCode        = {
-        val ByteCodeModuleCls =
-          // RC1 package structure -- see: scala/scala#3588 and https://issues.scala-lang.org/browse/SI-8345
-          (util.Try { Class.forName("scala.tools.scalap.scalax.rules.scalasig.ByteCode$") }
-          // M8 package structure
-           getOrElse  Class.forName("scala.tools.scalap.scalasig.ByteCode$"))
-        ByteCodeModuleCls.getDeclaredFields()(0).get(null).asInstanceOf[ByteCodeModule]
-      }
-      ByteCode forClass clazz bytes
-    }
-
-    scalap.Main.decompileScala(bytes, isPackageObject)
+    scalap.Main.decompileScala(ByteCode.forClass(clazz).bytes, isPackageObject)
   }
 
   def runScalapTest(): TestState = runTestCommon {
@@ -690,7 +671,7 @@ class Runner(val testInfo: TestInfo, val suiteRunner: AbstractRunner) {
 
     val args = file2String(testFile changeExtension "args")
     val cmdFile = if (isWin) testFile changeExtension "bat" else testFile
-    val succeeded = (((cmdFile + " " + args) #> logFile !) == 0)
+    val succeeded = (((s"$cmdFile $args" #> logFile).!) == 0)
 
     val result = if (succeeded) genPass else genFail(s"script $cmdFile failed to run")
 

@@ -93,7 +93,7 @@ trait Reporting extends scala.reflect.internal.Reporting { self: ast.Positions w
     def deprecationWarning(pos: Position, sym: Symbol): Unit = {
       val version = sym.deprecationVersion.getOrElse("")
       val since   = if (version.isEmpty) version else s" (since $version)"
-      val message = sym.deprecationMessage match { case Some(msg) => s": $msg"        case _ => "" }
+      val message = sym.deprecationMessage.map(": " + _).getOrElse("")
       deprecationWarning(pos, sym, s"$sym${sym.locationString} is deprecated$since$message", version)
     }
 
@@ -134,7 +134,7 @@ trait Reporting extends scala.reflect.internal.Reporting { self: ast.Positions w
       // todo: migrationWarnings
 
       if (settings.fatalWarnings && reporter.hasWarnings)
-        reporter.error(NoPosition, "No warnings can be incurred under -Xfatal-warnings.")
+        reporter.error(NoPosition, "No warnings can be incurred under -Werror.")
     }
   }
 }

@@ -41,7 +41,8 @@ import scala.collection.generic.DefaultSerializationProxy
 final class LongMap[V] private[collection] (defaultEntry: Long => V, initialBufferSize: Int, initBlank: Boolean)
   extends AbstractMap[Long, V]
     with MapOps[Long, V, Map, LongMap[V]]
-    with StrictOptimizedIterableOps[(Long, V), Iterable, LongMap[V]] {
+    with StrictOptimizedIterableOps[(Long, V), Iterable, LongMap[V]]
+    with Serializable {
   import LongMap._
 
   def this() = this(LongMap.exceptionDefault, 16, true)
@@ -438,6 +439,20 @@ final class LongMap[V] private[collection] (defaultEntry: Long => V, initialBuff
     }
   }
 
+  override def foreachEntry[U](f: (Long,V) => U): Unit = {
+    if ((extraKeys & 1) == 1) f(0L, zeroValue.asInstanceOf[V])
+    if ((extraKeys & 2) == 2) f(Long.MinValue, minValue.asInstanceOf[V])
+    var i,j = 0
+    while (i < _keys.length & j < _size) {
+      val k = _keys(i)
+      if (k != -k) {
+        j += 1
+        f(k, _values(i).asInstanceOf[V])
+      }
+      i += 1
+    }
+  }
+
   override def clone(): LongMap[V] = {
     val kz = java.util.Arrays.copyOf(_keys, _keys.length)
     val vz = java.util.Arrays.copyOf(_values,  _values.length)
@@ -454,7 +469,10 @@ final class LongMap[V] private[collection] (defaultEntry: Long => V, initialBuff
   }
 
   @deprecated("Use ++ with an explicit collection argument instead of + with varargs", "2.13.0")
-  override def + [V1 >: V](elem1: (Long, V1), elem2: (Long, V1), elems: (Long, V1)*): LongMap[V1] = LongMap.from(new View.Concat(new View.Appended(new View.Appended(toIterable, elem1), elem2), elems))
+  override def + [V1 >: V](elem1: (Long, V1), elem2: (Long, V1), elems: (Long, V1)*): LongMap[V1] = {
+    val m = this + elem1 + elem2
+    if(elems.isEmpty) m else m.concat(elems)
+  }
 
   override def concat[V1 >: V](xs: scala.collection.IterableOnce[(Long, V1)]): LongMap[V1] = {
     val lm = clone().asInstanceOf[LongMap[V1]]
@@ -462,7 +480,7 @@ final class LongMap[V] private[collection] (defaultEntry: Long => V, initialBuff
     lm
   }
 
-  override def ++ [V1 >: V](xs: scala.collection.Iterable[(Long, V1)]): LongMap[V1] = concat(xs)
+  override def ++ [V1 >: V](xs: scala.collection.IterableOnce[(Long, V1)]): LongMap[V1] = concat(xs)
 
   @deprecated("Use m.clone().addOne(k,v) instead of m.updated(k, v)", "2.13.0")
   override def updated[V1 >: V](key: Long, value: V1): LongMap[V1] =
@@ -524,7 +542,13 @@ final class LongMap[V] private[collection] (defaultEntry: Long => V, initialBuff
   /** Applies a transformation function to all values stored in this map.
     *  Note: the default, if any,  is not transformed.
     */
-  def transformValues(f: V => V): this.type = {
+  @deprecated("Use transformValuesInPlace instead of transformValues", "2.13.0")
+  @`inline` final def transformValues(f: V => V): this.type = transformValuesInPlace(f)
+
+  /** Applies a transformation function to all values stored in this map.
+    *  Note: the default, if any,  is not transformed.
+    */
+  def transformValuesInPlace(f: V => V): this.type = {
     if ((extraKeys & 1) == 1) zeroValue = f(zeroValue.asInstanceOf[V]).asInstanceOf[AnyRef]
     if ((extraKeys & 2) == 2) minValue = f(minValue.asInstanceOf[V]).asInstanceOf[AnyRef]
     var i,j = 0
@@ -546,7 +570,7 @@ final class LongMap[V] private[collection] (defaultEntry: Long => V, initialBuff
   def collect[V2](pf: PartialFunction[(Long, V), (Long, V2)]): LongMap[V2] =
     strictOptimizedCollect(LongMap.newBuilder[V2], pf)
 
-  override protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(LongMap.toFactory[V](LongMap), this)
+  protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(LongMap.toFactory[V](LongMap), this)
 
   override protected[this] def className = "LongMap"
 }
@@ -571,6 +595,7 @@ object LongMap {
     }
     def clear(): Unit = elems = new LongMap[V]
     def result(): LongMap[V] = elems
+    override def knownSize: Int = elems.knownSize
   }
 
   /** Creates a new `LongMap` with zero or more key/value pairs. */
@@ -603,7 +628,7 @@ object LongMap {
     case _ => buildFromIterableOnce(source)
   }
 
-  def newBuilder[V]: Builder[(Long, V), LongMap[V]] = new LongMapBuilder[V]
+  def newBuilder[V]: ReusableBuilder[(Long, V), LongMap[V]] = new LongMapBuilder[V]
 
   /** Creates a new `LongMap` from arrays of keys and values.
     *  Equivalent to but more efficient than `LongMap((keys zip values): _*)`.

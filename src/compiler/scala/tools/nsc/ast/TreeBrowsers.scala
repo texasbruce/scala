@@ -24,13 +24,13 @@ import javax.swing.event.TreeModelListener
 import javax.swing.tree._
 
 import java.util.concurrent.locks._
+import scala.annotation.tailrec
 
 /**
  * Tree browsers can show the AST in a graphical and interactive
  * way, useful for debugging and understanding.
  *
  * @author Iulian Dragos
- * @version 1.0
  */
 abstract class TreeBrowsers {
   val global: Global
@@ -124,7 +124,6 @@ abstract class TreeBrowsers {
    * displaying information
    *
    * @author Iulian Dragos
-   * @version 1.0
    */
   class BrowserFrame(phaseName: String = "unknown") {
     try {
@@ -304,6 +303,7 @@ abstract class TreeBrowsers {
         case _ =>
           str.append("tree.id: ").append(t.id)
           str.append("\ntree.pos: ").append(t.pos)
+          str.append(TreeInfo.attachments(t, "tree"))
           str.append("\nSymbol: ").append(TreeInfo.symbolText(t))
           str.append("\nSymbol owner: ").append(
             if ((t.symbol ne null) && t.symbol != NoSymbol)
@@ -522,12 +522,23 @@ abstract class TreeBrowsers {
       val s = t.symbol
 
       if ((s ne null) && (s != NoSymbol)) {
-        var str = s.flagString
-        if (s.isStaticMember) str = str + " isStatic "
-        (str + " annotations: " + s.annotations.mkString("", " ", "")
-          + (if (s.isTypeSkolem) "\ndeSkolemized annotations: " + s.deSkolemize.annotations.mkString("", " ", "") else ""))
+        val str = new StringBuilder(s.flagString)
+        if (s.isStaticMember) str ++= " isStatic "
+        str ++= " annotations: "
+        str ++= s.annotations.mkString("", " ", "")
+        if (s.isTypeSkolem) {
+          str ++= "\ndeSkolemized annotations: "
+          str ++= s.deSkolemize.annotations.mkString("", " ", "")
+        }
+        str ++= attachments(s, "")
+        str.toString
       }
       else ""
+    }
+
+    def attachments(t: Attachable, pre: String): String = {
+      if (t.attachments.isEmpty) ""
+      else t.attachments.all.mkString(s"\n$pre attachments:\n   ","\n   ","")
     }
   }
 
@@ -668,7 +679,6 @@ object TreeBrowsers {
     * of Wadler's adaptation of Hughes' pretty-printer.
     *
     * @author Michel Schinz
-    * @version 1.0
     */
   abstract class Document {
     def ::(hd: Document): Document = DocCons(hd, this)
@@ -683,6 +693,7 @@ object TreeBrowsers {
     def format(width: Int, writer: Writer): Unit = {
       type FmtState = (Int, Boolean, Document)
 
+      @tailrec
       def fits(w: Int, state: List[FmtState]): Boolean = state match {
         case _ if w < 0 =>
           false
@@ -713,6 +724,7 @@ object TreeBrowsers {
         if (rem == 1)     { writer write " " }
       }
 
+      @tailrec
       def fmt(k: Int, state: List[FmtState]): Unit = state match {
         case List() => ()
         case (_, _, DocNil) :: z =>

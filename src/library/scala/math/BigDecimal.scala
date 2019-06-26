@@ -18,11 +18,6 @@ import scala.language.implicitConversions
 import java.math.{ MathContext, BigDecimal => BigDec }
 import scala.collection.immutable.NumericRange
 
-/**
- *  @author  Stephane Micheloud
- *  @author  Rex Kerr
- *  @since 2.7
- */
 object BigDecimal {
   private final val maximumHashScale = 4934           // Quit maintaining hash identity with BigInt beyond this scale
   private final val hashCodeNotComputed = 0x5D50690F  // Magic value (happens to be "BigDecimal" old MurmurHash3 value)
@@ -355,9 +350,6 @@ object BigDecimal {
  *  and powers.  The left-hand argument's `MathContext` always determines the
  *  degree of rounding, if any, and is the one propagated through arithmetic
  *  operations that do not apply rounding themselves.
- *
- *  @author  Stephane Micheloud
- *  @author  Rex Kerr
  */
 final class BigDecimal(val bigDecimal: BigDec, val mc: MathContext)
 extends ScalaNumber with ScalaNumericConversions with Serializable with Ordered[BigDecimal] {
@@ -550,7 +542,14 @@ extends ScalaNumber with ScalaNumericConversions with Serializable with Ordered[
    *   +1 if it is greater than 0,
    *   0  if it is equal to 0.
    */
-  def signum: Int = this.bigDecimal.signum
+  def signum: Int = this.bigDecimal.signum()
+
+  /** Returns the sign of this BigDecimal;
+   *   -1 if it is less than 0,
+   *   +1 if it is greater than 0,
+   *   0  if it is equal to 0.
+   */
+  def sign: BigDecimal = signum
 
   /** Returns the precision of this `BigDecimal`.
    */

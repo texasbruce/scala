@@ -14,7 +14,13 @@ package scala.collection
 
 import scala.language.implicitConversions
 
-/** Decorator representing lazily zipped pairs. */
+/** Decorator representing lazily zipped pairs.
+  *
+  * @define coll pair
+  * @define willNotTerminateInf
+  *
+  *              Note: will not terminate for infinite-sized collections.
+  */
 final class LazyZip2[+El1, +El2, C1] private[collection](src: C1, coll1: Iterable[El1], coll2: Iterable[El2]) {
 
   /** Zips `that` iterable collection with an existing `LazyZip2`. The elements in each collection are
@@ -35,7 +41,7 @@ final class LazyZip2[+El1, +El2, C1] private[collection](src: C1, coll1: Iterabl
         def hasNext = elems1.hasNext && elems2.hasNext
         def next() = f(elems1.next(), elems2.next())
       }
-      override def knownSize: Int = coll1.knownSize min coll2.knownSize
+      override def knownSize: Int = zipKnownSize
       override def isEmpty: Boolean = coll1.isEmpty || coll2.isEmpty
     })
   }
@@ -113,8 +119,16 @@ final class LazyZip2[+El1, +El2, C1] private[collection](src: C1, coll1: Iterabl
       def hasNext = elems1.hasNext && elems2.hasNext
       def next() = (elems1.next(), elems2.next())
     }
-    override def knownSize: Int = coll1.knownSize min coll2.knownSize
+    override def knownSize: Int = zipKnownSize
     override def isEmpty: Boolean = coll1.isEmpty || coll2.isEmpty
+  }
+
+  private def zipKnownSize: Int = {
+    val s1 = coll1.knownSize
+    if (s1 == 0) 0 else {
+      val s2 = coll2.knownSize
+      if (s2 == 0) 0 else s1 min s2
+    }
   }
 
   override def toString = s"$coll1.lazyZip($coll2)"
@@ -125,7 +139,13 @@ object LazyZip2 {
 }
 
 
-/** Decorator representing lazily zipped triples. */
+/** Decorator representing lazily zipped triples.
+  *
+  * @define coll triple
+  * @define willNotTerminateInf
+  *
+  *              Note: will not terminate for infinite-sized collections.
+  */
 final class LazyZip3[+El1, +El2, +El3, C1] private[collection](src: C1,
                                                                coll1: Iterable[El1],
                                                                coll2: Iterable[El2],
@@ -150,7 +170,7 @@ final class LazyZip3[+El1, +El2, +El3, C1] private[collection](src: C1,
         def hasNext = elems1.hasNext && elems2.hasNext && elems3.hasNext
         def next() = f(elems1.next(), elems2.next(), elems3.next())
       }
-      override def knownSize: Int = coll1.knownSize min coll2.knownSize min coll3.knownSize
+      override def knownSize: Int = zipKnownSize
       override def isEmpty: Boolean = coll1.isEmpty || coll2.isEmpty || coll3.isEmpty
     })
   }
@@ -236,8 +256,19 @@ final class LazyZip3[+El1, +El2, +El3, C1] private[collection](src: C1,
       def hasNext = elems1.hasNext && elems2.hasNext && elems3.hasNext
       def next() = (elems1.next(), elems2.next(), elems3.next())
     }
-    override def knownSize: Int = coll1.knownSize min coll2.knownSize min coll3.knownSize
+    override def knownSize: Int = zipKnownSize
     override def isEmpty: Boolean = coll1.isEmpty || coll2.isEmpty || coll3.isEmpty
+  }
+
+  private def zipKnownSize: Int = {
+    val s1 = coll1.knownSize
+    if (s1 == 0) 0 else {
+      val s2 = coll2.knownSize
+      if (s2 == 0) 0 else {
+        val s3 = coll3.knownSize
+        if (s3 == 0) 0 else s1 min s2 min s3
+      }
+    }
   }
 
   override def toString = s"$coll1.lazyZip($coll2).lazyZip($coll3)"
@@ -249,7 +280,13 @@ object LazyZip3 {
 
 
 
-/** Decorator representing lazily zipped 4-tuples. */
+/** Decorator representing lazily zipped 4-tuples.
+  *
+  * @define coll tuple
+  * @define willNotTerminateInf
+  *
+  *              Note: will not terminate for infinite-sized collections.
+  */
 final class LazyZip4[+El1, +El2, +El3, +El4, C1] private[collection](src: C1,
                                                                      coll1: Iterable[El1],
                                                                      coll2: Iterable[El2],
@@ -266,7 +303,7 @@ final class LazyZip4[+El1, +El2, +El3, +El4, C1] private[collection](src: C1,
         def hasNext = elems1.hasNext && elems2.hasNext && elems3.hasNext && elems4.hasNext
         def next() = f(elems1.next(), elems2.next(), elems3.next(), elems4.next())
       }
-      override def knownSize: Int = coll1.knownSize min coll2.knownSize min coll3.knownSize min coll4.knownSize
+      override def knownSize: Int = zipKnownSize
       override def isEmpty: Boolean = coll1.isEmpty || coll2.isEmpty || coll3.isEmpty || coll4.isEmpty
     })
   }
@@ -358,8 +395,22 @@ final class LazyZip4[+El1, +El2, +El3, +El4, C1] private[collection](src: C1,
       def hasNext = elems1.hasNext && elems2.hasNext && elems3.hasNext && elems4.hasNext
       def next() = (elems1.next(), elems2.next(), elems3.next(), elems4.next())
     }
-    override def knownSize: Int = coll1.knownSize min coll2.knownSize min coll3.knownSize min coll4.knownSize
+    override def knownSize: Int = zipKnownSize
     override def isEmpty: Boolean = coll1.isEmpty || coll2.isEmpty || coll3.isEmpty || coll4.isEmpty
+  }
+
+  private def zipKnownSize: Int = {
+    val s1 = coll1.knownSize
+    if (s1 == 0) 0 else {
+      val s2 = coll2.knownSize
+      if (s2 == 0) 0 else {
+        val s3 = coll3.knownSize
+        if (s3 == 0) 0 else {
+          val s4 = coll4.knownSize
+          if (s4 == 0) 0 else s1 min s2 min s3 min s4
+        }
+      }
+    }
   }
 
   override def toString = s"$coll1.lazyZip($coll2).lazyZip($coll3).lazyZip($coll4)"

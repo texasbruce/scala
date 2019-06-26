@@ -23,6 +23,7 @@ import scala.reflect.internal.util.shortClassOfInstance
 import scala.collection.mutable
 import PickleFormat._
 import Flags._
+import scala.annotation.tailrec
 
 /**
  * Serialize a top-level module and/or class.
@@ -30,7 +31,6 @@ import Flags._
  * @see EntryTags.scala for symbol table attribute format.
  *
  * @author Martin Odersky
- * @version 1.0
  */
 abstract class Pickler extends SubComponent {
   import global._
@@ -90,6 +90,8 @@ abstract class Pickler extends SubComponent {
           throw e
       }
     }
+
+    override protected def shouldSkipThisPhaseForJava: Boolean = !settings.YpickleJava.value
   }
 
   private class Pickle(root: Symbol) extends PickleBuffer(new Array[Byte](4096), -1, 0) {
@@ -125,6 +127,7 @@ abstract class Pickler extends SubComponent {
      *  anyway? This is the case if symbol is a refinement class,
      *  an existentially bound variable, or a higher-order type parameter.
      */
+    @tailrec
     private def isLocalToPickle(sym: Symbol): Boolean = (sym != NoSymbol) && !sym.isPackageClass && (
          isRootSym(sym)
       || sym.isRefinementClass
@@ -214,7 +217,7 @@ abstract class Pickler extends SubComponent {
                 // initially, but seems not to work, as the bug shows).
                 // Adding the LOCAL_CHILD is necessary to retain exhaustivity warnings under separate
                 // compilation. See test neg/aladdin1055.
-                val parents = (if (sym.isTrait) List(definitions.ObjectTpe) else Nil) ::: List(sym.tpe)
+                val parents = if (sym.isTrait) List(definitions.ObjectTpe, sym.tpe) else List(sym.tpe)
                 globals + sym.newClassWithInfo(tpnme.LOCAL_CHILD, parents, EmptyScope, pos = sym.pos)
               }
 

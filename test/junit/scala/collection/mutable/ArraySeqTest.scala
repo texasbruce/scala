@@ -13,7 +13,13 @@ class ArraySeqTest {
   @Test
   def t11187(): Unit = {
     assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sorted)
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortInPlace)
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortBy(identity))
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortInPlaceBy(identity))
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortWith(_ < _))
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortInPlaceWith(_ < _))
   }
+
   @Test
   def t10851(): Unit = {
     val s1 = ArraySeq.untagged(1,2,3)
@@ -67,6 +73,13 @@ class ArraySeqTest {
     assertOfRef(Array(Double.box(65.0)), Array(Int.box(65)))
     assertOfRef(Array(Int.box(65)), Array(Char.box('A')))
     assertOfRef(Array(Char.box('A')), Array(Int.box(65)))
+  }
+
+  @Test
+  def t11583(): Unit = {
+    assertEquals("1 2 3 4 5 6 7", ArraySeq('1', '2', '3', '4', '5', '6', '7').mkString(" "))
+    // this wraps as `ArraySeq` via `Predef`
+    assertEquals("1 2 3 4 5 6 7", Array('1', '2', '3', '4', '5', '6', '7').mkString(" "))
   }
 }
 

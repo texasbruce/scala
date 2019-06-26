@@ -14,7 +14,7 @@
 
 package scala.tools.nsc.interpreter
 
-import java.io.{PrintWriter, StringWriter}
+import java.io.{PrintWriter, StringWriter, Closeable}
 import java.net.URL
 
 import PartialFunction.cond
@@ -67,12 +67,9 @@ import scala.util.control.NonFatal
   *  behaves exactly as does compiled code, including running at full speed.
   *  The main weakness is that redefining classes and methods is not handled
   *  properly, because rebinding at the Java level is technically difficult.
-  *
-  *  @author Moez A. Abdel-Gawad
-  *  @author Lex Spoon
   */
 class IMain(val settings: Settings, parentClassLoaderOverride: Option[ClassLoader], compilerSettings: Settings, val reporter: ReplReporter)
-  extends Repl with Imports with PresentationCompilation {
+  extends Repl with Imports with PresentationCompilation with Closeable {
 
   def this(interpreterSettings: Settings, reporter: ReplReporter) = this(interpreterSettings, None, interpreterSettings, reporter)
 
@@ -94,7 +91,7 @@ class IMain(val settings: Settings, parentClassLoaderOverride: Option[ClassLoade
 
   def compilerClasspath: Seq[java.net.URL] = (
     if (_initializeComplete) global.classPath.asURLs
-    else new PathResolver(settings).resultAsURLs  // the compiler's classpath
+    else new PathResolver(settings, global.closeableRegistry).resultAsURLs  // the compiler's classpath
     )
 
   // Run the code body with the given boolean settings flipped to true.
@@ -356,9 +353,6 @@ class IMain(val settings: Settings, parentClassLoaderOverride: Option[ClassLoade
       _runtimeClassLoader
     })
 
-  // Set the current Java "context" class loader to this interpreter's class loader
-  override def setContextClassLoader() = classLoader.setAsContext()
-
   def allDefinedNames: List[Name]  = exitingTyper(replScope.toList.map(_.name).sorted)
   def unqualifiedIds: List[String] = allDefinedNames.map(_.decode).sorted
 
@@ -569,7 +563,12 @@ class IMain(val settings: Settings, parentClassLoaderOverride: Option[ClassLoade
   /** This instance is no longer needed, so release any resources
     *  it is using.  The reporter's output gets flushed.
     */
-  override def close(): Unit = reporter.flush()
+  override def close(): Unit = {
+    reporter.flush()
+    if (initializeComplete) {
+      global.close()
+    }
+  }
 
   override lazy val power = new Power(this, new StdReplVals(this))(tagOfStdReplVals, classTag[StdReplVals])
 
@@ -602,7 +601,7 @@ class IMain(val settings: Settings, parentClassLoaderOverride: Option[ClassLoade
       val classNameRegex = s"$lineRegex.*".r
       def isWrapperCode(x: StackTraceElement) = cond(x.getClassName) {
         case classNameRegex() =>
-          x.getMethodName == nme.CONSTRUCTOR.decoded || x.getMethodName == printName
+          x.getMethodName == nme.CONSTRUCTOR.decoded || x.getMethodName == "<clinit>" || x.getMethodName == printName
       }
       val stackTrace = unwrapped.stackTracePrefixString(!isWrapperCode(_))
 
@@ -1094,14 +1093,16 @@ class IMain(val settings: Settings, parentClassLoaderOverride: Option[ClassLoade
   def parse(line: String): Either[Result, (List[Tree], Position)] = {
     var isIncomplete = false
     currentRun.parsing.withIncompleteHandler((_, _) => isIncomplete = true) {
-      withoutWarnings {
-        reporter.reset()
-        val unit = newCompilationUnit(line, label)
-        val trees = newUnitParser(unit).parseStats()
-        if (reporter.hasErrors) Left(Error)
-        else if (isIncomplete) Left(Incomplete)
-        else Right((trees, unit.firstXmlPos))
+      reporter.reset()
+      val unit = newCompilationUnit(line, label)
+      val trees = newUnitParser(unit).parseStats()
+      if (reporter.hasErrors) Left(Error)
+      else if (reporter.hasWarnings && settings.fatalWarnings) {
+        currentRun.reporting.summarizeErrors()
+        Left(Error)
       }
+      else if (isIncomplete) Left(Incomplete)
+      else Right((trees, unit.firstXmlPos))
     }
   }
 

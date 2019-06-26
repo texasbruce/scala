@@ -60,9 +60,6 @@ import scala.util.control.NonFatal
  * ''Note:'': all Try combinators will catch exceptions and return failure unless otherwise specified in the documentation.
  *
  * `Try` comes to the Scala standard library after years of use as an integral part of Twitter's stack.
- *
- * @author based on Twitter's original implementation in com.twitter.util.
- * @since 2.10
  */
 sealed abstract class Try[+T] extends Product with Serializable {
 
@@ -233,15 +230,15 @@ final case class Failure[+T](exception: Throwable) extends Try[T] {
   override def recover[U >: T](pf: PartialFunction[Throwable, U]): Try[U] = {
     val marker = Statics.pfMarker
     try {
-      val v = pf.applyOrElse(exception, ((x: Throwable) => marker).asInstanceOf[Function[Throwable, U]])
-      if (marker ne v.asInstanceOf[AnyRef]) Success(v) else this
+      val v = pf.applyOrElse(exception, (x: Throwable) => marker)
+      if (marker ne v.asInstanceOf[AnyRef]) Success(v.asInstanceOf[U]) else this
     } catch { case NonFatal(e) => Failure(e) }
   }
   override def recoverWith[U >: T](pf: PartialFunction[Throwable, Try[U]]): Try[U] = {
     val marker = Statics.pfMarker
     try {
-      val v = pf.applyOrElse(exception, ((x: Throwable) => marker).asInstanceOf[Function[Throwable, Try[U]]])
-      if (marker ne v.asInstanceOf[AnyRef]) v else this
+      val v = pf.applyOrElse(exception, (x: Throwable) => marker)
+      if (marker ne v.asInstanceOf[AnyRef]) v.asInstanceOf[Try[U]] else this
     } catch { case NonFatal(e) => Failure(e) }
   }
   override def failed: Try[Throwable] = Success(exception)

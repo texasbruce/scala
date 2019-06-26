@@ -8,9 +8,9 @@ import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
 import scala.collection.JavaConverters._
-import scala.tools.partest.ASMConverters._
-import scala.tools.testing.BytecodeTesting
-import scala.tools.testing.BytecodeTesting._
+import scala.tools.testkit.ASMConverters._
+import scala.tools.testkit.BytecodeTesting
+import scala.tools.testkit.BytecodeTesting._
 
 @RunWith(classOf[JUnit4])
 class UnusedLocalVariablesTest extends BytecodeTesting {
@@ -34,7 +34,7 @@ class UnusedLocalVariablesTest extends BytecodeTesting {
     val code = """def f(a: Long, b: String, c: Double): Unit = { val x = 10 + a; val y = x + 10 }"""
     assertLocalVarCount(code, 6)
 
-    val code2 = """def f(a: Long): Unit = { var x = if (a == 0l) return else () }"""
+    val code2 = """def f(a: Long): Unit = { var x = if (a == 0L) return else () }"""
     assertLocalVarCount(code2, 3) // remains
   }
 

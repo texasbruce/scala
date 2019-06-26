@@ -109,9 +109,6 @@ import scala.util.DynamicVariable
  *    <tr><td style="background-color:#000;color:#fff">First primes: Vector(2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47)</td></tr>
  *  </table>
  *
- *  @author  Matthias Zenger
- *  @since   1.0
- *
  *  @groupname console-output Console Output
  *  @groupprio console-output 30
  *  @groupdesc console-output These methods provide output via the console.
@@ -163,7 +160,7 @@ object Console extends AnsiColor {
    *  @see `withOut[T](out:OutputStream)(thunk: => T)`
    *  @group io-redefinition
    */
-  def withOut[T](out: PrintStream)(thunk: =>T): T =
+  def withOut[T](out: PrintStream)(thunk: => T): T =
     outVar.withValue(out)(thunk)
 
   /** Sets the default output stream for the duration
@@ -176,7 +173,7 @@ object Console extends AnsiColor {
    *  @see `withOut[T](out:PrintStream)(thunk: => T)`
    *  @group io-redefinition
    */
-  def withOut[T](out: OutputStream)(thunk: =>T): T =
+  def withOut[T](out: OutputStream)(thunk: => T): T =
     withOut(new PrintStream(out))(thunk)
 
   /** Set the default error stream for the duration
@@ -189,10 +186,10 @@ object Console extends AnsiColor {
    *  @param thunk the code to execute with
    *               the new error stream active
    *  @return the results of `thunk`
-   *  @see `withErr[T](err:OutputStream)(thunk: =>T)`
+   *  @see `withErr[T](err:OutputStream)(thunk: => T)`
    *  @group io-redefinition
    */
-  def withErr[T](err: PrintStream)(thunk: =>T): T =
+  def withErr[T](err: PrintStream)(thunk: => T): T =
     errVar.withValue(err)(thunk)
 
   /** Sets the default error stream for the duration
@@ -202,10 +199,10 @@ object Console extends AnsiColor {
    *  @param thunk the code to execute with
    *               the new error stream active
    *  @return the results of `thunk`
-   *  @see `withErr[T](err:PrintStream)(thunk: =>T)`
+   *  @see `withErr[T](err:PrintStream)(thunk: => T)`
    *  @group io-redefinition
    */
-  def withErr[T](err: OutputStream)(thunk: =>T): T =
+  def withErr[T](err: OutputStream)(thunk: => T): T =
     withErr(new PrintStream(err))(thunk)
 
   /** Sets the default input stream for the duration
@@ -223,10 +220,10 @@ object Console extends AnsiColor {
    *               the new input stream active
    *
    *  @return the results of `thunk`
-   *  @see `withIn[T](in:InputStream)(thunk: =>T)`
+   *  @see `withIn[T](in:InputStream)(thunk: => T)`
    *  @group io-redefinition
    */
-  def withIn[T](reader: Reader)(thunk: =>T): T =
+  def withIn[T](reader: Reader)(thunk: => T): T =
     inVar.withValue(new BufferedReader(reader))(thunk)
 
   /** Sets the default input stream for the duration
@@ -236,10 +233,10 @@ object Console extends AnsiColor {
    *  @param thunk the code to execute with
    *               the new input stream active
    *  @return the results of `thunk`
-   *  @see `withIn[T](reader:Reader)(thunk: =>T)`
+   *  @see `withIn[T](reader:Reader)(thunk: => T)`
    *  @group io-redefinition
    */
-  def withIn[T](in: InputStream)(thunk: =>T): T =
+  def withIn[T](in: InputStream)(thunk: => T): T =
     withIn(new InputStreamReader(in))(thunk)
 
   /** Prints an object to `out` using its `toString` method.

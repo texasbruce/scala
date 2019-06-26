@@ -511,7 +511,8 @@ abstract class Constructors extends Statics with Transform with TypingTransforme
       private def isStationaryParamRef(sym: Symbol) = (
         isParamRef(sym) &&
         !(sym.isGetter && sym.accessed.isVariable) &&
-        !sym.isSetter
+        !sym.isSetter &&
+        !sym.isVariable
       )
 
       /*
@@ -738,18 +739,7 @@ abstract class Constructors extends Statics with Transform with TypingTransforme
         copyParam(accSetter, parameter(acc))
       }
 
-      // Return a pair consisting of (all statements up to and including superclass and trait constr calls, rest)
-      def splitAtSuper(stats: List[Tree]) = {
-        def isConstr(tree: Tree): Boolean = tree match {
-          case Block(_, expr) => isConstr(expr) // scala/bug#6481 account for named argument blocks
-          case _              => (tree.symbol ne null) && tree.symbol.isConstructor
-        }
-        val (pre, rest0)       = stats span (!isConstr(_))
-        val (supercalls, rest) = rest0 span (isConstr(_))
-        (pre ::: supercalls, rest)
-      }
-
-      val (uptoSuperStats, remainingConstrStats) = splitAtSuper(constructorStats)
+      val (uptoSuperStats, remainingConstrStats) = treeInfo.splitAtSuper(constructorStats, classOnly = false)
 
       /* TODO: XXX This condition (`isDelayedInitSubclass && remainingConstrStats.nonEmpty`) is not correct:
       * remainingConstrStats.nonEmpty excludes too much,

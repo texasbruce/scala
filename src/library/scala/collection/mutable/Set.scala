@@ -12,16 +12,17 @@
 
 package scala.collection.mutable
 
-import scala.collection.IterableFactory
+import scala.collection.{IterableFactory, IterableFactoryDefaults, IterableOps}
 import scala.language.higherKinds
 
 /** Base trait for mutable sets */
 trait Set[A]
   extends Iterable[A]
     with collection.Set[A]
-    with SetOps[A, Set, Set[A]] {
+    with SetOps[A, Set, Set[A]]
+    with IterableFactoryDefaults[A, Set] {
 
-  override def iterableFactory: IterableFactory[IterableCC] = Set
+  override def iterableFactory: IterableFactory[Set] = Set
 }
 
 /**
@@ -30,6 +31,7 @@ trait Set[A]
   */
 trait SetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
   extends collection.SetOps[A, CC, C]
+    with IterableOps[A, CC, C] // only needed so we can use super[IterableOps] below
     with Cloneable[C]
     with Builder[A, C]
     with Growable[A]
@@ -60,6 +62,11 @@ trait SetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
     else remove(elem)
   }
 
+  /** Removes an element from this set.
+   *
+   *  @param elem     the element to be removed
+   *  @return true if this set contained the element before it was removed
+   */
   def remove(elem: A): Boolean = {
     val res = contains(elem)
     coll -= elem
@@ -78,13 +85,24 @@ trait SetOps[A, +CC[X], +C <: SetOps[A, CC, C]]
     *             are removed.
     */
   def filterInPlace(p: A => Boolean): this.type = {
-    for (elem <- this.toList) // scala/bug#7269 toList avoids ConcurrentModificationException
-      if (!p(elem)) this -= elem
+    if (nonEmpty) {
+      val array = this.toArray[Any] // scala/bug#7269 toArray avoids ConcurrentModificationException
+      val arrayLength = array.length
+      var i = 0
+      while (i < arrayLength) {
+        val elem = array(i).asInstanceOf[A]
+        if (!p(elem)) {
+          this -= elem
+        }
+        i += 1
+      }
+    }
     this
   }
 
   override def clone(): C = empty ++= toIterable
 
+  override def knownSize: Int = super[IterableOps].knownSize
 }
 
 /**

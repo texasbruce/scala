@@ -13,7 +13,7 @@
 package scala.tools.nsc
 package backend.jvm
 
-import scala.annotation.switch
+import scala.annotation.{switch, tailrec}
 import scala.collection.mutable
 import scala.tools.asm
 import scala.tools.asm.tree.MethodInsnNode
@@ -24,7 +24,6 @@ import scala.tools.nsc.backend.jvm.GenBCode._
  *  A high-level facade to the ASM API for bytecode generation.
  *
  *  @author  Miguel Garcia, http://lamp.epfl.ch/~magarcia/ScalaCompilerCornerReloaded
- *  @version 1.0
  *
  */
 abstract class BCodeIdiomatic {
@@ -226,6 +225,7 @@ abstract class BCodeIdiomatic {
      *
      * can-multi-thread
      */
+    @tailrec
     final def emitT2T(from: BType, to: BType): Unit = {
 
       assert(
@@ -248,6 +248,7 @@ abstract class BCodeIdiomatic {
 
       if (from == to) { return }
       // the only conversion involving BOOL that is allowed is (BOOL -> BOOL)
+      // TODO: it seems in the jvm a bool is an int, so it should be treated the same as byte (for example)
       assert(from != BOOL && to != BOOL, s"inconvertible types : $from -> $to")
 
       // We're done with BOOL already

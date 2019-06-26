@@ -14,11 +14,9 @@ package scala
 package collection
 package immutable
 
-import java.io.{ObjectInputStream, ObjectOutputStream}
-import java.util
-
-import scala.collection.mutable.{Builder, ReusableBuilder}
-import scala.annotation.unchecked.uncheckedVariance
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.generic.DefaultSerializable
+import scala.collection.mutable.ReusableBuilder
 import scala.runtime.Statics.releaseFence
 
 /** $factoryInfo
@@ -32,14 +30,51 @@ object Vector extends StrictOptimizedSeqFactory[Vector] {
 
   def from[E](it: collection.IterableOnce[E]): Vector[E] =
     it match {
+      case as: ArraySeq[E] if as.length <= 32 && as.unsafeArray.isInstanceOf[Array[AnyRef]] =>
+        if (as.isEmpty) NIL
+        else {
+          val v = new Vector(0, as.length, 0)
+          v.display0 = as.unsafeArray.asInstanceOf[Array[AnyRef]]
+          v.depth = 1
+          releaseFence()
+          v
+        }
       case v: Vector[E] => v
-      case _ if it.knownSize == 0 => empty[E]
-      case _ => (newBuilder ++= it).result()
+      case _ =>
+        val knownSize = it.knownSize
+
+        if (knownSize == 0) empty[E]
+        else if (knownSize > 0 && knownSize <= 32) {
+          val display0 = new Array[AnyRef](knownSize)
+
+          var i = 0
+          val iterator = it.iterator
+          while (iterator.hasNext) {
+            display0(i) = iterator.next().asInstanceOf[AnyRef]
+            i += 1
+          }
+          val v = new Vector[E](0, knownSize, 0)
+          v.depth = 1
+          v.display0 = display0
+          releaseFence()
+          v
+        } else {
+          (newBuilder ++= it).result()
+        }
     }
 
-  def newBuilder[A]: Builder[A, Vector[A]] = new VectorBuilder[A]
+  def newBuilder[A]: ReusableBuilder[A, Vector[A]] = new VectorBuilder[A]
 
-  private[immutable] val NIL = new Vector[Nothing](0, 0, 0)
+  /** Creates a Vector of one element. Not safe for publication, the caller is responsible for `releaseFence` */
+  private def single[A](elem: A): Vector[A] = {
+    val s = new Vector[A](0, 1, 0)
+    s.depth = 1
+    s.display0 = Array[AnyRef](elem.asInstanceOf[AnyRef])
+    s
+  }
+
+  @transient
+  private val NIL = new Vector[Nothing](0, 0, 0)
 
   private val defaultApplyPreferredMaxLength: Int =
     try System.getProperty("scala.collection.immutable.Vector.defaultApplyPreferredMaxLength",
@@ -63,8 +98,6 @@ object Vector extends StrictOptimizedSeqFactory[Vector] {
  *  endian bit-mapped vector trie with a branching factor of 32.  Locality is very good, but not
  *  contiguous, which is good for very large sequences.
  *
- *  $usesMutableState
- *
  *  @see [[http://docs.scala-lang.org/overviews/collections/concrete-immutable-collection-classes.html#vectors "Scala's Collection Library overview"]]
  *  section on `Vectors` for more information.
  *
@@ -77,12 +110,14 @@ object Vector extends StrictOptimizedSeqFactory[Vector] {
  *  @define mayNotTerminateInf
  *  @define willNotTerminateInf
  */
-final class Vector[+A] private[immutable] (private[collection] val startIndex: Int, private[collection] val endIndex: Int, focus: Int)
+final class Vector[+A] private[immutable] (private[collection] val startIndex: Int, private[collection] val endIndex: Int, private[immutable] val focus: Int)
   extends AbstractSeq[A]
     with IndexedSeq[A]
     with IndexedSeqOps[A, Vector, Vector[A]]
     with StrictOptimizedSeqOps[A, Vector, Vector[A]]
-    with VectorPointer[A @uncheckedVariance] { self =>
+    with IterableFactoryDefaults[A, Vector]
+    with VectorPointer[A]
+    with DefaultSerializable { self =>
 
   override def iterableFactory: SeqFactory[Vector] = Vector
 
@@ -111,6 +146,28 @@ final class Vector[+A] private[immutable] (private[collection] val startIndex: I
     }
   }
 
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[A, S]): S with EfficientSplit = {
+    import convert.impl._
+    var depth = -1
+    val displaySource: VectorPointer[A] =
+      if (dirty) iterator.asInstanceOf[VectorIterator[A]]
+      else this
+    val trunk: Array[AnyRef] =
+      if      (endIndex <= (1 <<  5)) { depth = 0; displaySource.display0 }
+      else if (endIndex <= (1 << 10)) { depth = 1; displaySource.display1.asInstanceOf[Array[AnyRef]] }
+      else if (endIndex <= (1 << 15)) { depth = 2; displaySource.display2.asInstanceOf[Array[AnyRef]] }
+      else if (endIndex <= (1 << 20)) { depth = 3; displaySource.display3.asInstanceOf[Array[AnyRef]] }
+      else if (endIndex <= (1 << 25)) { depth = 4; displaySource.display4.asInstanceOf[Array[AnyRef]] }
+      else  /* endIndex <=  1 << 30*/ { depth = 5; displaySource.display5.asInstanceOf[Array[AnyRef]] }
+    val s = shape.shape match {
+      case StepperShape.IntShape    => new IntVectorStepper   (startIndex, endIndex, depth, trunk)
+      case StepperShape.LongShape   => new LongVectorStepper  (startIndex, endIndex, depth, trunk)
+      case StepperShape.DoubleShape => new DoubleVectorStepper(startIndex, endIndex, depth, trunk)
+      case _         => shape.parUnbox(new AnyVectorStepper[A](startIndex, endIndex, depth, trunk))
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
+
   // Ideally, clients will inline calls to map all the way down, including the iterator/builder methods.
   // In principle, escape analysis could even remove the iterator/builder allocations and do it
   // with local variables exclusively. But we're not quite there yet ...
@@ -127,7 +184,7 @@ final class Vector[+A] private[immutable] (private[collection] val startIndex: I
     if (index >= 0 && idx < endIndex)
       idx
     else
-      throw new IndexOutOfBoundsException(index.toString)
+      throw new IndexOutOfBoundsException(s"$index is out of bounds (min 0, max ${endIndex-1})")
   }
   // requires structure is at pos oldIndex = xor ^ index
   private final def getElem(index: Int, xor: Int): A = {
@@ -227,30 +284,51 @@ final class Vector[+A] private[immutable] (private[collection] val startIndex: I
     dropRight(1)
   }
 
-  // appendAll (suboptimal but avoids worst performance gotchas)
-  override def appendedAll[B >: A](suffix: collection.IterableOnce[B]): Vector[B] = {
-    import Vector.{Log2ConcatFaster, TinyAppendFaster}
-    if (suffix.iterator.isEmpty) this
-    else {
-      suffix match {
-        case suffix: collection.Iterable[B] =>
-          suffix.size match {
-            // Often it's better to append small numbers of elements (or prepend if RHS is a vector)
-            case n if n <= TinyAppendFaster || n < (this.size >>> Log2ConcatFaster) =>
-              var v: Vector[B] = this
-              for (x <- suffix) v = v :+ x
-              v
-            case n if this.size < (n >>> Log2ConcatFaster) && suffix.isInstanceOf[Vector[_]] =>
-              var v = suffix.asInstanceOf[Vector[B]]
-              val ri = this.reverseIterator
-              while (ri.hasNext) v = ri.next() +: v
-              v
-            case _ => super.appendedAll(suffix)
+  override def appendedAll[B >: A](suffix: collection.IterableOnce[B]): Vector[B] =
+    suffix match {
+      case v: Vector[B] =>
+        val thisLength = this.length
+        val thatLength = v.length
+        if (thisLength == 0) v
+        else if (thatLength == 0) this
+        else if (thatLength <= Vector.TinyAppendFaster) {
+          // Often it's better to append small numbers of elements (or prepend if RHS is a vector)
+          var v0: Vector[B] = this
+          var i = 0
+          while (i < thatLength) {
+            v0 = v0.appended(v(i))
+            i += 1
           }
-        case _ => super.appendedAll(suffix)
-      }
+          v0
+        } else {
+          if (thisLength < (thatLength >>> Vector.Log2ConcatFaster)) {
+            var v0 = v
+            val iter = this.reverseIterator
+            while(iter.hasNext) {
+              v0 = iter.next() +: v0
+            }
+            v0
+          } else {
+            new VectorBuilder[B]().addAll(this).addAll(suffix).result()
+          }
+        }
+      case _ =>
+        val thatKnownSize = suffix.knownSize
+        if (thatKnownSize == 0) this
+        else if (thatKnownSize > 0 && thatKnownSize <= Vector.TinyAppendFaster) {
+          var v0: Vector[B] = this
+          val iter = suffix.iterator
+          while (iter.hasNext) {
+            v0 = v0.appended(iter.next())
+          }
+          v0
+        } else {
+          val iter = suffix.iterator
+          if (iter.hasNext) {
+            new VectorBuilder[B]().addAll(this).addAll(suffix).result()
+          } else this
+        }
     }
-  }
 
   override def prependedAll[B >: A](prefix: collection.IterableOnce[B]): Vector[B] = {
     // Implementation similar to `appendAll`: when of the collections to concatenate (either `this` or `prefix`)
@@ -307,145 +385,158 @@ final class Vector[+A] private[immutable] (private[collection] val startIndex: I
   }
 
   override def prepended[B >: A](value: B): Vector[B] = {
-    val result = if (endIndex != startIndex) {
-      val blockIndex = (startIndex - 1) & ~31
-      val lo = (startIndex - 1) & 31
-
-      if (startIndex != blockIndex + 32) {
-        val s = new Vector(startIndex - 1, endIndex, blockIndex)
-        s.initFrom(this)
-        s.dirty = dirty
-        s.gotoPosWritable(focus, blockIndex, focus ^ blockIndex)
-        s.display0(lo) = value.asInstanceOf[AnyRef]
+    val thisLength = length
+    val result =
+      if (depth == 1 && thisLength < 32) {
+        val s = new Vector(0, thisLength + 1, 0)
+        s.depth = 1
+        val newDisplay0 = new Array[AnyRef](thisLength + 1)
+        System.arraycopy(display0, startIndex, newDisplay0, 1, thisLength)
+        newDisplay0(0) = value.asInstanceOf[AnyRef]
+        s.display0 = newDisplay0
         s
-      } else {
+      } else if (thisLength > 0) {
+        val blockIndex = (startIndex - 1) & ~31
+        val lo = (startIndex - 1) & 31
 
-        val freeSpace = (1 << (5 * depth)) - endIndex           // free space at the right given the current tree-structure depth
-        val shift = freeSpace & ~((1 << (5 * (depth - 1))) - 1) // number of elements by which we'll shift right (only move at top level)
-        val shiftBlocks = freeSpace >>> (5 * (depth - 1))       // number of top-level blocks
-
-        if (shift != 0) {
-          // case A: we can shift right on the top level
-          if (depth > 1) {
-            val newBlockIndex = blockIndex + shift
-            val newFocus = focus + shift
-
-            val s = new Vector(startIndex - 1 + shift, endIndex + shift, newBlockIndex)
-            s.initFrom(this)
-            s.dirty = dirty
-            s.shiftTopLevel(0, shiftBlocks) // shift right by n blocks
-            s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex) // maybe create pos; prepare for writing
-            s.display0(lo) = value.asInstanceOf[AnyRef]
-            s
-          } else {
-            val newBlockIndex = blockIndex + 32
-            val newFocus = focus
-
-            val s = new Vector(startIndex - 1 + shift, endIndex + shift, newBlockIndex)
-            s.initFrom(this)
-            s.dirty = dirty
-            s.shiftTopLevel(0, shiftBlocks) // shift right by n elements
-            s.gotoPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex) // prepare for writing
-            s.display0(shift - 1) = value.asInstanceOf[AnyRef]
-            s
-          }
-        } else if (blockIndex < 0) {
-          // case B: we need to move the whole structure
-          val move = (1 << (5 * (depth + 1))) - (1 << (5 * depth))
-          val newBlockIndex = blockIndex + move
-          val newFocus = focus + move
-
-          val s = new Vector(startIndex - 1 + move, endIndex + move, newBlockIndex)
+        if (startIndex != blockIndex + 32) {
+          val s = new Vector(startIndex - 1, endIndex, blockIndex)
           s.initFrom(this)
           s.dirty = dirty
-          s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex) // could optimize: we know it will create a whole branch
+          s.gotoPosWritable(focus, blockIndex, focus ^ blockIndex)
           s.display0(lo) = value.asInstanceOf[AnyRef]
           s
         } else {
-          val newBlockIndex = blockIndex
-          val newFocus = focus
 
-          val s = new Vector(startIndex - 1, endIndex, newBlockIndex)
-          s.initFrom(this)
-          s.dirty = dirty
-          s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
-          s.display0(lo) = value.asInstanceOf[AnyRef]
-          s
+          val freeSpace = (1 << (5 * depth)) - endIndex           // free space at the right given the current tree-structure depth
+          val shift = freeSpace & ~((1 << (5 * (depth - 1))) - 1) // number of elements by which we'll shift right (only move at top level)
+          val shiftBlocks = freeSpace >>> (5 * (depth - 1))       // number of top-level blocks
+
+          if (shift != 0) {
+            // case A: we can shift right on the top level
+            if (depth > 1) {
+              val newBlockIndex = blockIndex + shift
+              val newFocus = focus + shift
+
+              val s = new Vector(startIndex - 1 + shift, endIndex + shift, newBlockIndex)
+              s.initFrom(this)
+              s.dirty = dirty
+              s.shiftTopLevel(0, shiftBlocks) // shift right by n blocks
+              s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex) // maybe create pos; prepare for writing
+              s.display0(lo) = value.asInstanceOf[AnyRef]
+              s
+            } else {
+              val newBlockIndex = blockIndex + 32
+              val newFocus = focus
+
+              val s = new Vector(startIndex - 1 + shift, endIndex + shift, newBlockIndex)
+              s.initFrom(this)
+              s.dirty = dirty
+              s.shiftTopLevel(0, shiftBlocks) // shift right by n elements
+              s.gotoPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex) // prepare for writing
+              s.display0(shift - 1) = value.asInstanceOf[AnyRef]
+              s
+            }
+          } else if (blockIndex < 0) {
+            // case B: we need to move the whole structure
+            val move = (1 << (5 * (depth + 1))) - (1 << (5 * depth))
+            val newBlockIndex = blockIndex + move
+            val newFocus = focus + move
+
+            val s = new Vector(startIndex - 1 + move, endIndex + move, newBlockIndex)
+            s.initFrom(this)
+            s.dirty = dirty
+            s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex) // could optimize: we know it will create a whole branch
+            s.display0(lo) = value.asInstanceOf[AnyRef]
+            s
+          } else {
+            val newBlockIndex = blockIndex
+            val newFocus = focus
+
+            val s = new Vector(startIndex - 1, endIndex, newBlockIndex)
+            s.initFrom(this)
+            s.dirty = dirty
+            s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
+            s.display0(lo) = value.asInstanceOf[AnyRef]
+            s
+          }
         }
-      }
-    } else {
-      // empty vector, just insert single element at the back
-      val elems = new Array[AnyRef](32)
-      elems(31) = value.asInstanceOf[AnyRef]
-      val s = new Vector(31, 32, 0)
-      s.depth = 1
-      s.display0 = elems
-      s
-    }
+      } else Vector.single(value)
+
     releaseFence()
     result
   }
 
   override def appended[B >: A](value: B): Vector[B] = {
-    val result = if (endIndex != startIndex) {
-      val blockIndex = endIndex & ~31 // round down to nearest 32
-      val lo = endIndex & 31 // remainder of blockIndex / 32
-
-      if (endIndex != blockIndex) {
-        val s = new Vector(startIndex, endIndex + 1, blockIndex)
-        s.initFrom(this)
-        s.dirty = dirty
-        s.gotoPosWritable(focus, blockIndex, focus ^ blockIndex)
-        s.display0(lo) = value.asInstanceOf[AnyRef]
+    val thisLength = length
+    val result =
+      if (depth == 1 && thisLength < 32) {
+        val s = new Vector(0, thisLength + 1, 0)
+        s.depth = 1
+        val newDisplay0 = new Array[AnyRef](thisLength + 1)
+        System.arraycopy(display0, startIndex, newDisplay0, 0, thisLength)
+        newDisplay0(thisLength) = value.asInstanceOf[AnyRef]
+        s.display0 = newDisplay0
         s
-      } else {
-        val shift = startIndex & ~((1 << (5 * (depth - 1))) - 1)
-        val shiftBlocks = startIndex >>> (5 * (depth - 1))
+      } else if (thisLength > 0) {
+        val blockIndex = endIndex & ~31 // round down to nearest 32
+        val lo = endIndex & 31 // remainder of blockIndex / 32
 
-        if (shift != 0) {
-          if (depth > 1) {
-            val newBlockIndex = blockIndex - shift
-            val newFocus = focus - shift
+        if (endIndex != blockIndex) {
+          val s = new Vector(startIndex, endIndex + 1, blockIndex)
+          s.initFrom(this)
+          s.dirty = dirty
+          s.gotoPosWritable(focus, blockIndex, focus ^ blockIndex)
+          s.display0(lo) = value.asInstanceOf[AnyRef]
+          s
+        } else {
+          val shift = startIndex & ~((1 << (5 * (depth - 1))) - 1)
+          val shiftBlocks = startIndex >>> (5 * (depth - 1))
 
-            val s = new Vector(startIndex - shift, endIndex + 1 - shift, newBlockIndex)
+          if (shift != 0) {
+            if (depth > 1) {
+              val newBlockIndex = blockIndex - shift
+              val newFocus = focus - shift
+
+              val s = new Vector(startIndex - shift, endIndex + 1 - shift, newBlockIndex)
+              s.initFrom(this)
+              s.dirty = dirty
+              s.shiftTopLevel(shiftBlocks, 0) // shift left by n blocks
+              s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
+              s.display0(lo) = value.asInstanceOf[AnyRef]
+              s
+            } else {
+              val newBlockIndex = blockIndex - 32
+              val newFocus = focus
+
+              val s = new Vector(startIndex - shift, endIndex + 1 - shift, newBlockIndex)
+              s.initFrom(this)
+              s.dirty = dirty
+              s.shiftTopLevel(shiftBlocks, 0) // shift right by n elements
+              s.gotoPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
+
+              if (s.display0.length < 32 - shift - 1) {
+                val newDisplay0 = new Array[AnyRef](32 - shift - 1)
+                s.display0.copyToArray(newDisplay0)
+                s.display0 = newDisplay0
+              }
+              s.display0(32 - shift) = value.asInstanceOf[AnyRef]
+              s
+            }
+          } else {
+            val newBlockIndex = blockIndex
+            val newFocus = focus
+
+            val s = new Vector(startIndex, endIndex + 1, newBlockIndex)
             s.initFrom(this)
             s.dirty = dirty
-            s.shiftTopLevel(shiftBlocks, 0) // shift left by n blocks
             s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
             s.display0(lo) = value.asInstanceOf[AnyRef]
             s
-          } else {
-            val newBlockIndex = blockIndex - 32
-            val newFocus = focus
-
-            val s = new Vector(startIndex - shift, endIndex + 1 - shift, newBlockIndex)
-            s.initFrom(this)
-            s.dirty = dirty
-            s.shiftTopLevel(shiftBlocks, 0) // shift right by n elements
-            s.gotoPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
-            s.display0(32 - shift) = value.asInstanceOf[AnyRef]
-            s
           }
-        } else {
-          val newBlockIndex = blockIndex
-          val newFocus = focus
-
-          val s = new Vector(startIndex, endIndex + 1, newBlockIndex)
-          s.initFrom(this)
-          s.dirty = dirty
-          s.gotoFreshPosWritable(newFocus, newBlockIndex, newFocus ^ newBlockIndex)
-          s.display0(lo) = value.asInstanceOf[AnyRef]
-          s
         }
-      }
-    } else {
-      val elems = new Array[AnyRef](32)
-      elems(0) = value.asInstanceOf[AnyRef]
-      val s = new Vector(0, 1, 0)
-      s.depth = 1
-      s.display0 = elems
-      s
-    }
+      } else Vector.single(value)
+
     releaseFence()
     result
   }
@@ -630,18 +721,19 @@ final class Vector[+A] private[immutable] (private[collection] val startIndex: I
   override protected[this] def className = "Vector"
 }
 
-class VectorIterator[+A](_startIndex: Int, endIndex: Int)
+//TODO: When making this class private, make it final as well.
+@deprecated("This class is not intended for public consumption and will be made private in the future.","2.13.0")
+class VectorIterator[+A](_startIndex: Int, private[this] var endIndex: Int)
   extends AbstractIterator[A]
-    with VectorPointer[A @uncheckedVariance] {
+    with VectorPointer[A] {
 
-  private[this] var blockIndex: Int = _startIndex & ~31
-  private[this] var lo: Int = _startIndex & 31
+  private[this] final var blockIndex: Int = _startIndex & ~31
+  private[this] final var lo: Int = _startIndex & 31
+  private[this] final var endLo = Math.min(endIndex - blockIndex, 32)
 
-  private[this] var endLo = Math.min(endIndex - blockIndex, 32)
+  override def hasNext: Boolean = _hasNext
 
-  def hasNext = _hasNext
-
-  private[this] var _hasNext = blockIndex + lo < endIndex
+  private[this] final var _hasNext = blockIndex + lo < endIndex
 
   private[this] def advanceToNextBlockIfNecessary(): Unit = {
     if (lo == endLo) {
@@ -656,6 +748,21 @@ class VectorIterator[+A](_startIndex: Int, endIndex: Int)
         _hasNext = false
       }
     }
+  }
+
+  override def take(n: Int): Iterator[A] = {
+    if(n <= 0) {
+      _hasNext = false
+      endIndex = 0
+    } else {
+      val dropR = remainingElementCount - n
+      if(dropR > 0) {
+        endIndex -= dropR
+        endLo = Math.min(endIndex - blockIndex, 32)
+        _hasNext = blockIndex + lo < endIndex
+      }
+    }
+    this
   }
 
   override def drop(n: Int): Iterator[A] = {
@@ -674,12 +781,22 @@ class VectorIterator[+A](_startIndex: Int, endIndex: Int)
         }
       } else {
         _hasNext = false
+        endIndex = 0
       }
     }
     this
   }
 
-  def next(): A = {
+  override def slice(from: Int, until: Int): Iterator[A] = {
+    val _until =
+      if(from > 0) {
+        drop(from)
+        until - from
+      } else until
+    take(_until)
+  }
+
+  override def next(): A = {
     if (!_hasNext) throw new NoSuchElementException("reached iterator end")
     val res = display0(lo).asInstanceOf[A]
     lo += 1
@@ -710,14 +827,17 @@ class VectorIterator[+A](_startIndex: Int, endIndex: Int)
    *  Such a vector can then be split into several vectors using methods like `take` and `drop`.
    */
   private[collection] def remainingVector: Vector[A] = {
-    val v = new Vector(blockIndex + lo, endIndex, blockIndex + lo)
-    v.initFrom(this)
-    v
+    if(!_hasNext) Vector.empty
+    else {
+      val v = new Vector(blockIndex + lo, endIndex, blockIndex + lo)
+      v.initFrom(this)
+      v
+    }
   }
 }
 
 /** A class to build instances of `Vector`.  This builder is reusable. */
-final class VectorBuilder[A]() extends ReusableBuilder[A, Vector[A]] with VectorPointer[A @uncheckedVariance] {
+final class VectorBuilder[A]() extends ReusableBuilder[A, Vector[A]] with VectorPointer[A] {
 
   // possible alternative: start with display0 = null, blockIndex = -32, lo = 32
   // to avoid allocating initial array if the result will be empty anyways
@@ -725,12 +845,25 @@ final class VectorBuilder[A]() extends ReusableBuilder[A, Vector[A]] with Vector
   display0 = new Array[AnyRef](32)
   depth = 1
 
+  /** The index within the final Vector of `this.display0(0)` */
   private[this] var blockIndex = 0
+  /** The index within `this.display0` which is the next available index to write to.
+    * This value may be equal to display0.length, in which case before writing, a new block
+    * should be created (see advanceToNextBlockIfNecessary)*/
   private[this] var lo = 0
+  /** Indicates an offset of the final vector from the actual underlying array elements. This is
+    * used for example in `drop(1)` where instead of copying the entire Vector, only the startIndex is changed.
+    *
+    * This is present in the Builder because we may be able to share structure with a Vector that is `addAll`'d to this.
+    * In which case we must track that Vector's startIndex offset.
+    * */
+  private[this] var startIndex = 0
 
-  def size: Int = blockIndex + lo
+  def size: Int = (blockIndex & ~31) + lo - startIndex
   def isEmpty: Boolean = size == 0
   def nonEmpty: Boolean = size != 0
+
+  override def knownSize: Int = size
 
   private[this] def advanceToNextBlockIfNecessary(): Unit = {
     if (lo >= display0.length) {
@@ -749,10 +882,49 @@ final class VectorBuilder[A]() extends ReusableBuilder[A, Vector[A]] with Vector
   }
 
   override def addAll(xs: IterableOnce[A]): this.type = {
-    val it = (xs.iterator : Iterator[A]).asInstanceOf[Iterator[AnyRef]]
-    while (it.hasNext) {
-      advanceToNextBlockIfNecessary()
-      lo += it.copyToArray(xs = display0, start = lo, len = display0.length - lo)
+
+    xs match {
+      case v: Vector[A] if this.isEmpty && v.length >= 32 =>
+        depth = v.depth
+        blockIndex = (v.endIndex - 1) & ~31
+        lo = v.endIndex - blockIndex
+        startIndex = v.startIndex
+
+        /** `initFrom` will overwrite display0. Keep reference to it so we can reuse the array.*/
+        val initialDisplay0 = display0
+        initFrom(v)
+        stabilize(v.focus)
+        gotoPosWritable1(v.focus, blockIndex, v.focus ^ blockIndex, initialDisplay0)
+
+        depth match {
+          case 2 =>
+            display1((blockIndex >>> 5) & 31) = display0
+          case 3 =>
+            display1((blockIndex >>> 5) & 31) = display0
+            display2((blockIndex >>> 10) & 31) = display1
+          case 4 =>
+            display1((blockIndex >>> 5) & 31) = display0
+            display2((blockIndex >>> 10) & 31) = display1
+            display3((blockIndex >>> 15) & 31) = display2
+          case 5 =>
+            display1((blockIndex >>> 5) & 31) = display0
+            display2((blockIndex >>> 10) & 31) = display1
+            display3((blockIndex >>> 15) & 31) = display2
+            display4((blockIndex >>> 20) & 31) = display3
+          case 6 =>
+            display1((blockIndex >>> 5) & 31) = display0
+            display2((blockIndex >>> 10) & 31) = display1
+            display3((blockIndex >>> 15) & 31) = display2
+            display4((blockIndex >>> 20) & 31) = display3
+            display5((blockIndex >>> 25) & 31) = display4
+          case _ => ()
+        }
+      case _ =>
+        val it = (xs.iterator : Iterator[A]).asInstanceOf[Iterator[AnyRef]]
+        while (it.hasNext) {
+          advanceToNextBlockIfNecessary()
+          lo += it.copyToArray(xs = display0, start = lo, len = display0.length - lo)
+        }
     }
     this
   }
@@ -761,9 +933,9 @@ final class VectorBuilder[A]() extends ReusableBuilder[A, Vector[A]] with Vector
     val size = this.size
     if (size == 0)
       return Vector.empty
-    val s = new Vector[A](0, size, 0) // should focus front or back?
+    val s = new Vector[A](startIndex, blockIndex + lo, 0) // should focus front or back?
     s.initFrom(this)
-    if (depth > 1) s.gotoPos(0, size - 1) // we're currently focused to size - 1, not size!
+    if (depth > 1) s.gotoPos(startIndex, blockIndex + lo - 1) // we're currently focused to size - 1, not size!
     releaseFence()
     s
   }
@@ -773,10 +945,11 @@ final class VectorBuilder[A]() extends ReusableBuilder[A, Vector[A]] with Vector
     display0 = new Array[AnyRef](32)
     blockIndex = 0
     lo = 0
+    startIndex = 0
   }
 }
 
-private[immutable] trait VectorPointer[T] {
+private[immutable] trait VectorPointer[+T] {
     private[immutable] var depth:    Int = _
     private[immutable] var display0: Array[AnyRef] = _
     private[immutable] var display1: Array[Array[AnyRef]] = _
@@ -968,10 +1141,19 @@ private[immutable] trait VectorPointer[T] {
 
     // STUFF BELOW USED BY APPEND / UPDATE
 
-    private[immutable] final def nullSlotAndCopy[T <: AnyRef](array: Array[Array[T]], index: Int): Array[T] = {
+  /** Sets array(index) to null and returns an array with same contents as what was previously at array(index)
+    *
+    * If `destination` array is not null, original contents of array(index) will be copied to it, and it will be returned.
+    * Otherwise array(index).clone() is returned
+    */
+    private[immutable] final def nullSlotAndCopy[T <: AnyRef](array: Array[Array[T]], index: Int, destination: Array[T] = null): Array[T] = {
       val x = array(index)
       array(index) = null
-      x.clone()
+      if (destination == null) x.clone()
+      else {
+        x.copyToArray(destination, 0)
+        destination
+      }
     }
 
     // make sure there is no aliasing
@@ -1054,10 +1236,9 @@ private[immutable] trait VectorPointer[T] {
         display0 = display0.clone()
     }
 
-
     // requires structure is dirty and at pos oldIndex,
     // ensures structure is dirty and at pos newIndex and writable at level 0
-    private[immutable] final def gotoPosWritable1(oldIndex: Int, newIndex: Int, xor: Int): Unit = {
+    private[immutable] final def gotoPosWritable1(oldIndex: Int, newIndex: Int, xor: Int, reuseDisplay0: Array[AnyRef] = null): Unit = {
       if        (xor < (1 <<  5)) { // level = 0
         display0 = display0.clone()
       } else if (xor < (1 << 10)) { // level = 1
@@ -1070,7 +1251,7 @@ private[immutable] trait VectorPointer[T] {
         display1((oldIndex >>>  5) & 31) = display0
         display2((oldIndex >>> 10) & 31) = display1
         display1 = nullSlotAndCopy(display2, (newIndex >>> 10) & 31)
-        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31)
+        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31, reuseDisplay0)
       } else if (xor < (1 << 20)) { // level = 3
         display1 = display1.clone()
         display2 = display2.clone()
@@ -1080,7 +1261,7 @@ private[immutable] trait VectorPointer[T] {
         display3((oldIndex >>> 15) & 31) = display2
         display2 = nullSlotAndCopy(display3, (newIndex >>> 15) & 31)
         display1 = nullSlotAndCopy(display2, (newIndex >>> 10) & 31)
-        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31)
+        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31, reuseDisplay0)
       } else if (xor < (1 << 25)) { // level = 4
         display1 = display1.clone()
         display2 = display2.clone()
@@ -1093,7 +1274,7 @@ private[immutable] trait VectorPointer[T] {
         display3 = nullSlotAndCopy(display4, (newIndex >>> 20) & 31)
         display2 = nullSlotAndCopy(display3, (newIndex >>> 15) & 31)
         display1 = nullSlotAndCopy(display2, (newIndex >>> 10) & 31)
-        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31)
+        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31, reuseDisplay0)
       } else if (xor < (1 << 30)) { // level = 5
         display1 = display1.clone()
         display2 = display2.clone()
@@ -1109,7 +1290,7 @@ private[immutable] trait VectorPointer[T] {
         display3 = nullSlotAndCopy(display4, (newIndex >>> 20) & 31)
         display2 = nullSlotAndCopy(display3, (newIndex >>> 15) & 31)
         display1 = nullSlotAndCopy(display2, (newIndex >>> 10) & 31)
-        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31)
+        display0 = nullSlotAndCopy(display1, (newIndex >>>  5) & 31, reuseDisplay0)
       } else {                      // level = 6
         throw new IllegalArgumentException()
       }

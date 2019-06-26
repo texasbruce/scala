@@ -22,9 +22,10 @@ trait Map[K, V]
     with collection.Map[K, V]
     with MapOps[K, V, Map, Map[K, V]]
     with Growable[(K, V)]
-    with Shrinkable[K] {
+    with Shrinkable[K]
+    with MapFactoryDefaults[K, V, Map, Iterable] {
 
-  override def mapFactory: scala.collection.MapFactory[MapCC] = Map
+  override def mapFactory: scala.collection.MapFactory[Map] = Map
 
   /*
   //TODO consider keeping `remove` because it returns the removed entry
@@ -45,7 +46,7 @@ trait Map[K, V]
     *  @param d     the function mapping keys to values, used for non-present keys
     *  @return      a wrapper of the map with a default value
     */
-  def withDefault(d: K => V): Map.WithDefault[K, V] = new Map.WithDefault[K, V](this, d)
+  def withDefault(d: K => V): Map[K, V] = new Map.WithDefault[K, V](this, d)
 
   /** The same map with a given default value.
     *  Note: The default is only used for `apply`. Other methods like `get`, `contains`, `iterator`, `keys`, etc.
@@ -56,7 +57,7 @@ trait Map[K, V]
     *  @param d     default value used for non-present keys
     *  @return      a wrapper of the map with a default value
     */
-  def withDefaultValue(d: V): Map.WithDefault[K, V] = new Map.WithDefault[K, V](this, x => d)
+  def withDefaultValue(d: V): Map[K, V] = new Map.WithDefault[K, V](this, x => d)
 }
 
 /**
@@ -74,12 +75,10 @@ trait MapOps[K, V, +CC[X, Y] <: MapOps[X, Y, CC, _], +C <: MapOps[K, V, CC, C]]
   def result(): C = coll
 
   @deprecated("Use - or remove on an immutable Map", "2.13.0")
-  @deprecatedOverriding("This method should be final, but is not due to scala/bug#10853", "2.13.0")
-  /*final*/ def - (key: K): C = clone() -= key
+  final def - (key: K): C = clone() -= key
 
   @deprecated("Use -- or removeAll on an immutable Map", "2.13.0")
-  @deprecatedOverriding("This method should be final, but is not due to scala/bug#10853", "2.13.0")
-  /*final*/ def - (key1: K, key2: K, keys: K*): C = clone() -= key1 -= key2 --= keys
+  final def - (key1: K, key2: K, keys: K*): C = clone() -= key1 -= key2 --= keys
 
   /** Adds a new key/value pair to this map and optionally returns previously bound value.
     *  If the map already contains a
@@ -105,6 +104,29 @@ trait MapOps[K, V, +CC[X, Y] <: MapOps[X, Y, CC, _], +C <: MapOps[K, V, CC, C]]
     *  @param value  The new value
     */
   def update(key: K, value: V): Unit = { coll += ((key, value)) }
+
+  /**
+   * Update a mapping for the specified key and its current optionally-mapped value
+   * (`Some` if there is current mapping, `None` if not).
+   *
+   * If the remapping function returns `Some(v)`, the mapping is updated with the new value `v`.
+   * If the remapping function returns `None`, the mapping is removed (or remains absent if initially absent).
+   * If the function itself throws an exception, the exception is rethrown, and the current mapping is left unchanged.
+   *
+   * @param key the key value
+   * @param remappingFunction a partial function that receives current optionally-mapped value and return a new mapping
+   * @return the new value associated with the specified key
+   */
+  def updateWith(key: K)(remappingFunction: Option[V] => Option[V]): Option[V] = {
+    val previousValue = this.get(key)
+    val nextValue = remappingFunction(previousValue)
+    (previousValue, nextValue) match {
+      case (None, None) => // do nothing
+      case (Some(_), None) => this.remove(key)
+      case (_, Some(v)) => this.update(key,v)
+    }
+    nextValue
+  }
 
   /** If given key is already in this map, returns associated value.
    *
@@ -151,9 +173,18 @@ trait MapOps[K, V, +CC[X, Y] <: MapOps[X, Y, CC, _], +C <: MapOps[K, V, CC, C]]
     * @param p  The test predicate
     */
   def filterInPlace(p: (K, V) => Boolean): this.type = {
-    for ((k, v) <- this.toList) // scala/bug#7269 toList avoids ConcurrentModificationException
-      if (!p(k, v)) this -= k
-
+    if (nonEmpty) {
+      val array = this.toArray[Any] // scala/bug#7269 toArray avoids ConcurrentModificationException
+      val arrayLength = array.length
+      var i = 0
+      while (i < arrayLength) {
+        val (k, v) = array(i).asInstanceOf[(K, V)]
+        if (!p(k, v)) {
+          this -= k
+        }
+        i += 1
+      }
+    }
     this
   }
 
@@ -177,6 +208,8 @@ trait MapOps[K, V, +CC[X, Y] <: MapOps[X, Y, CC, _], +C <: MapOps[K, V, CC, C]]
   @deprecated("Use m.clone().addOne((k,v)) instead of m.updated(k, v)", "2.13.0")
   def updated[V1 >: V](key: K, value: V1): CC[K, V1] =
     clone().asInstanceOf[CC[K, V1]].addOne((key, value))
+
+  override def knownSize: Int = super[IterableOps].knownSize
 }
 
 /**
@@ -187,9 +220,10 @@ trait MapOps[K, V, +CC[X, Y] <: MapOps[X, Y, CC, _], +C <: MapOps[K, V, CC, C]]
 @SerialVersionUID(3L)
 object Map extends MapFactory.Delegate[Map](HashMap) {
 
+  @SerialVersionUID(3L)
   class WithDefault[K, V](val underlying: Map[K, V], val defaultValue: K => V)
     extends AbstractMap[K, V]
-      with MapOps[K, V, Map, WithDefault[K, V]] {
+      with MapOps[K, V, Map, WithDefault[K, V]] with Serializable {
 
     override def default(key: K): V = defaultValue(key)
 
@@ -206,7 +240,7 @@ object Map extends MapFactory.Delegate[Map](HashMap) {
 
     def addOne(elem: (K, V)): WithDefault.this.type = { underlying.addOne(elem); this }
 
-    override def concat[V2 >: V](suffix: collection.IterableOnce[(K, V2)]): WithDefault[K, V2] =
+    override def concat[V2 >: V](suffix: collection.IterableOnce[(K, V2)]): Map[K, V2] =
       underlying.concat(suffix).withDefault(defaultValue)
 
     override def empty: WithDefault[K, V] = new WithDefault[K, V](underlying.empty, defaultValue)

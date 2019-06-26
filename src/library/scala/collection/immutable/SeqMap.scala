@@ -14,8 +14,7 @@ package scala
 package collection
 package immutable
 
-import java.io.{ObjectInputStream, ObjectOutputStream}
-
+import scala.annotation.unchecked.uncheckedVariance
 import scala.collection.mutable.Builder
 
 /**
@@ -28,19 +27,21 @@ import scala.collection.mutable.Builder
   * @tparam K      the type of the keys contained in this linked map.
   * @tparam V      the type of the values associated with the keys in this linked map.
   *
-  * @author Matthew de Detrich
-  * @version 2.13
-  * @since 2.13
   * @define coll immutable seq map
   * @define Coll `immutable.SeqMap`
   */
 
 trait SeqMap[K, +V]
-  extends AbstractMap[K, V]
+  extends Map[K, V]
+    with collection.SeqMap[K, V]
     with MapOps[K, V, SeqMap, SeqMap[K, V]]
+    with MapFactoryDefaults[K, V, SeqMap, Iterable] {
+  override def mapFactory: MapFactory[SeqMap] = SeqMap
+}
+
 
 object SeqMap extends MapFactory[SeqMap] {
-  def empty[K, V]: SeqMap[K, V] = EmptyLinkedMap.asInstanceOf[SeqMap[K, V]]
+  def empty[K, V]: SeqMap[K, V] = EmptySeqMap.asInstanceOf[SeqMap[K, V]]
 
   def from[K, V](it: collection.IterableOnce[(K, V)]): SeqMap[K, V] =
     it match {
@@ -51,7 +52,7 @@ object SeqMap extends MapFactory[SeqMap] {
   def newBuilder[K, V]: Builder[(K, V), SeqMap[K, V]] = VectorMap.newBuilder
 
   @SerialVersionUID(3L)
-  private object EmptyLinkedMap extends SeqMap[Any, Nothing] {
+  private object EmptySeqMap extends SeqMap[Any, Nothing] with Serializable {
     override def size: Int = 0
     override def knownSize: Int = 0
     override def apply(key: Any) = throw new NoSuchElementException("key not found: " + key)
@@ -60,7 +61,7 @@ object SeqMap extends MapFactory[SeqMap] {
     override def getOrElse [V1](key: Any, default: => V1): V1 = default
     def iterator: Iterator[(Any, Nothing)] = Iterator.empty
     def updated [V1] (key: Any, value: V1): SeqMap[Any, V1] = new SeqMap1(key, value)
-    def remove(key: Any): SeqMap[Any, Nothing] = this
+    def removed(key: Any): SeqMap[Any, Nothing] = this
   }
 
   @SerialVersionUID(3L)
@@ -77,7 +78,7 @@ object SeqMap extends MapFactory[SeqMap] {
     def updated[V1 >: V](key: K, value: V1): SeqMap[K, V1] =
       if (key == key1) new SeqMap1(key1, value)
       else new SeqMap2(key1, value1, key, value)
-    def remove(key: K): SeqMap[K, V] =
+    def removed(key: K): SeqMap[K, V] =
       if (key == key1) SeqMap.empty else this
     override def foreach[U](f: ((K, V)) => U): Unit = {
       f((key1, value1))
@@ -106,7 +107,7 @@ object SeqMap extends MapFactory[SeqMap] {
       if (key == key1) new SeqMap2(key1, value, key2, value2)
       else if (key == key2) new SeqMap2(key1, value1, key2, value)
       else new SeqMap3(key1, value1, key2, value2, key, value)
-    def remove(key: K): SeqMap[K, V] =
+    def removed(key: K): SeqMap[K, V] =
       if (key == key1) new SeqMap1(key2, value2)
       else if (key == key2) new SeqMap1(key1, value1)
       else this
@@ -141,7 +142,7 @@ object SeqMap extends MapFactory[SeqMap] {
       else if (key == key2) new SeqMap3(key1, value1, key2, value, key3, value3)
       else if (key == key3) new SeqMap3(key1, value1, key2, value2, key3, value)
       else new SeqMap4(key1, value1, key2, value2, key3, value3, key, value)
-    def remove(key: K): SeqMap[K, V] =
+    def removed(key: K): SeqMap[K, V] =
       if (key == key1)      new SeqMap2(key2, value2, key3, value3)
       else if (key == key2) new SeqMap2(key1, value1, key3, value3)
       else if (key == key3) new SeqMap2(key1, value1, key2, value2)
@@ -193,7 +194,7 @@ object SeqMap extends MapFactory[SeqMap] {
           )
         new VectorMap(fields, underlying)
       }
-    def remove(key: K): SeqMap[K, V] =
+    def removed(key: K): SeqMap[K, V] =
       if (key == key1)      new SeqMap3(key2, value2, key3, value3, key4, value4)
       else if (key == key2) new SeqMap3(key1, value1, key3, value3, key4, value4)
       else if (key == key3) new SeqMap3(key1, value1, key2, value2, key4, value4)

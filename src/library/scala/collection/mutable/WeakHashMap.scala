@@ -14,7 +14,7 @@ package scala
 package collection
 package mutable
 
-import convert.Wrappers._
+import scala.collection.convert.JavaCollectionWrappers.{JMapWrapper, JMapWrapperLike}
 
 /** A hash map with references to entries which are weakly reachable. Entries are
  *  removed from this map when the key is no longer (strongly) referenced. This class wraps
@@ -23,7 +23,6 @@ import convert.Wrappers._
  *  @tparam K      type of keys contained in this map
  *  @tparam V      type of values associated with the keys
  *
- *  @since 2.8
  *  @see [[http://docs.scala-lang.org/overviews/collections/concrete-mutable-collection-classes.html#weak-hash-maps "Scala's Collection Library overview"]]
  *  section on `Weak Hash Maps` for more information.
  *
@@ -32,8 +31,10 @@ import convert.Wrappers._
  *  @define mayNotTerminateInf
  *  @define willNotTerminateInf
  */
+@SerialVersionUID(3L)
 class WeakHashMap[K, V] extends JMapWrapper[K, V](new java.util.WeakHashMap)
-    with JMapWrapperLike[K, V, WeakHashMap, WeakHashMap[K, V]] {
+    with JMapWrapperLike[K, V, WeakHashMap, WeakHashMap[K, V]]
+    with MapFactoryDefaults[K, V, WeakHashMap, Iterable] {
   override def empty = new WeakHashMap[K, V]
   override def mapFactory: MapFactory[WeakHashMap] = WeakHashMap
   override protected[this] def stringPrefix = "WeakHashMap"

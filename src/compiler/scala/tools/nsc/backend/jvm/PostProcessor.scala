@@ -15,6 +15,7 @@ package backend.jvm
 
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.collection.mutable
 import scala.reflect.internal.util.{NoPosition, Position, StringContextStripMarginOps}
 import scala.reflect.io.AbstractFile
 import scala.tools.asm.ClassWriter
@@ -62,24 +63,20 @@ abstract class PostProcessor extends PerRunInit {
     val bytes = try {
       if (!clazz.isArtifact) {
         localOptimizations(classNode)
-        backendUtils.onIndyLambdaImplMethodIfPresent(internalName) {
-          methods => if (methods.nonEmpty) backendUtils.addLambdaDeserialize(classNode, methods)
-        }
+        val indyLambdaBodyMethods = backendUtils.indyLambdaBodyMethods(internalName)
+        if (indyLambdaBodyMethods.nonEmpty)
+          backendUtils.addLambdaDeserialize(classNode, indyLambdaBodyMethods)
       }
 
       warnCaseInsensitiveOverwrite(clazz)
       setInnerClasses(classNode)
       serializeClass(classNode)
     } catch {
-      case e: java.lang.RuntimeException if e.getMessage != null && (e.getMessage contains "too large!") =>
-        backendReporting.error(NoPosition,
-          s"Could not write class ${internalName} because it exceeds JVM code size limits. ${e.getMessage}")
-        null
       case ex: InterruptedException => throw ex
       case ex: Throwable =>
         // TODO fail fast rather than continuing to write the rest of the class files?
         if (frontendAccess.compilerSettings.debug) ex.printStackTrace()
-        backendReporting.error(NoPosition, s"Error while emitting ${internalName}\n${ex.getMessage}")
+        backendReporting.error(NoPosition, s"Error while emitting $internalName\n${ex.getMessage}")
         null
     }
 
@@ -123,9 +120,9 @@ abstract class PostProcessor extends PerRunInit {
         callGraph.addClass(c.classNode)
       }
       if (compilerSettings.optInlinerEnabled)
-        inliner.runInliner()
-      if (compilerSettings.optClosureInvocations)
-        closureOptimizer.rewriteClosureApplyInvocations()
+        inliner.runInlinerAndClosureOptimizer()
+      else if (compilerSettings.optClosureInvocations)
+        closureOptimizer.rewriteClosureApplyInvocations(None, mutable.Map.empty)
     }
   }
 

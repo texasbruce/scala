@@ -12,6 +12,7 @@ class ArraySeqTest {
   @Test
   def slice(): Unit = {
 
+    import language.implicitConversions
     implicit def array2ArraySeq[T](array: Array[T]): ArraySeq[T] =
       ArraySeq.unsafeWrapArray(array)
 
@@ -55,6 +56,13 @@ class ArraySeqTest {
   def t10851(): Unit = {
     val s1 = ArraySeq.untagged(1,2,3)
     assertTrue(s1.unsafeArray.getClass == classOf[Array[AnyRef]])
+  }
+
+  @Test
+  def t11187(): Unit = {
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sorted)
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortBy(identity))
+    assertEquals(ArraySeq(1, 2), ArraySeq(2, 1).sortWith(_ < _))
   }
 
   @Test

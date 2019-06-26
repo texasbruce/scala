@@ -16,7 +16,6 @@ package transform
 import symtab._
 import Flags._
 import scala.collection._
-import scala.language.postfixOps
 
 abstract class CleanUp extends Statics with Transform with ast.TreeDSL {
   import global._
@@ -259,7 +258,7 @@ abstract class CleanUp extends Statics with Transform with ast.TreeDSL {
               // reflective method call machinery
               val invokeName  = MethodClass.tpe member nme.invoke_                                  // scala.reflect.Method.invoke(...)
               def cache       = REF(reflectiveMethodCache(ad.symbol.name.toString, paramTypes))     // cache Symbol
-              def lookup      = Apply(cache, List(qual1() GETCLASS()))                                // get Method object from cache
+              def lookup      = Apply(cache, List(qual1().GETCLASS()))                                // get Method object from cache
               def invokeArgs  = ArrayValue(TypeTree(ObjectTpe), params)                       // args for invocation
               def invocation  = (lookup DOT invokeName)(qual1(), invokeArgs)                        // .invoke(qual1, ...)
 
@@ -269,7 +268,7 @@ abstract class CleanUp extends Statics with Transform with ast.TreeDSL {
               def catchBody   = Throw(Apply(Select(Ident(invokeExc), nme.getCause), Nil))
 
               // try { method.invoke } catch { case e: InvocationTargetExceptionClass => throw e.getCause() }
-              fixResult(TRY (invocation) CATCH { CASE (catchVar) ==> catchBody } ENDTRY)
+              fixResult(TRY (invocation) CATCH { CASE (catchVar) ==> catchBody } FINALLY END)
             }
 
             /* A possible primitive method call, represented by methods in BoxesRunTime. */
@@ -299,7 +298,7 @@ abstract class CleanUp extends Statics with Transform with ast.TreeDSL {
              * so we have to generate both kinds of code.
              */
             def genArrayCallWithTest =
-              IF ((qual1() GETCLASS()) DOT nme.isArray) THEN genArrayCall ELSE genDefaultCall
+              IF ((qual1().GETCLASS()) DOT nme.isArray) THEN genArrayCall ELSE genDefaultCall
 
             localTyper typed (
               if (isMaybeBoxed && isJavaValueMethod) genValueCallWithTest
@@ -339,7 +338,8 @@ abstract class CleanUp extends Statics with Transform with ast.TreeDSL {
               (mparams, resType)
             case tpe @ OverloadedType(pre, alts) =>
               reporter.warning(ad.pos, s"Overloaded type reached the backend! This is a bug in scalac.\n     Symbol: ${ad.symbol}\n  Overloads: $tpe\n  Arguments: " + ad.args.map(_.tpe))
-              alts filter (_.paramss.flatten.size == params.length) map (_.tpe) match {
+              val fittingAlts = alts collect { case alt if sumSize(alt.paramss, 0) == params.length => alt.tpe }
+              fittingAlts match {
                 case mt @ MethodType(mparams, resType) :: Nil =>
                   reporter.warning(NoPosition, "Only one overload has the right arity, proceeding with overload " + mt)
                   (mparams, resType)
@@ -489,7 +489,7 @@ abstract class CleanUp extends Statics with Transform with ast.TreeDSL {
       // List(a, b, c) ~> new ::(a, new ::(b, new ::(c, Nil)))
       case Apply(appMeth @ Select(qual, _), List(Apply(wrapArrayMeth, List(StripCast(rest @ ArrayValue(elemtpt, _))))))
       if wrapArrayMeth.symbol == currentRun.runDefinitions.wrapVarargsRefArrayMethod
-        && currentRun.runDefinitions.isListApply(appMeth) && rest.elems.length < transformListApplyLimit =>
+        && currentRun.runDefinitions.isListApply(appMeth) && rest.elems.lengthIs < transformListApplyLimit =>
         val consed = rest.elems.reverse.foldLeft(gen.mkAttributedRef(NilModule): Tree)(
           (acc, elem) => New(ConsClass, elem, acc)
         )

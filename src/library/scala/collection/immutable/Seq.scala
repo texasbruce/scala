@@ -14,15 +14,17 @@ package scala
 package collection
 package immutable
 
+import scala.annotation.unchecked.uncheckedVariance
 import scala.language.higherKinds
 
 trait Seq[+A] extends Iterable[A]
                  with collection.Seq[A]
-                 with SeqOps[A, Seq, Seq[A]] {
+                 with SeqOps[A, Seq, Seq[A]]
+                 with IterableFactoryDefaults[A, Seq] {
 
   override final def toSeq: this.type = this
 
-  override def iterableFactory: SeqFactory[IterableCC] = Seq
+  override def iterableFactory: SeqFactory[Seq] = Seq
 }
 
 /**
@@ -37,12 +39,18 @@ trait SeqOps[+A, +CC[_], +C] extends Any with collection.SeqOps[A, CC, C]
   * @define Coll `immutable.Seq`
   */
 @SerialVersionUID(3L)
-object Seq extends SeqFactory.Delegate[Seq](List)
+object Seq extends SeqFactory.Delegate[Seq](List) {
+  override def from[E](it: IterableOnce[E]): Seq[E] = it match {
+    case s: Seq[E] => s
+    case _ => super.from(it)
+  }
+}
 
 /** Base trait for immutable indexed sequences that have efficient `apply` and `length` */
 trait IndexedSeq[+A] extends Seq[A]
                         with collection.IndexedSeq[A]
-                        with IndexedSeqOps[A, IndexedSeq, IndexedSeq[A]] {
+                        with IndexedSeqOps[A, IndexedSeq, IndexedSeq[A]]
+                        with IterableFactoryDefaults[A, IndexedSeq] {
 
   final override def toIndexedSeq: IndexedSeq[A] = this
 
@@ -64,8 +72,8 @@ trait IndexedSeq[+A] extends Seq[A]
           // but if apply is more efficient than Iterators then we can use the apply for all the comparison
           // we default to the minimum preferred length
           val maxApplyCompare = {
-            val preferredLength = Math.min(applyPreferredMaxLength, that.applyPreferredMaxLength).toLong
-            if (preferredLength <= (length << 1)) Math.min(preferredLength, length) else length
+            val preferredLength = Math.min(applyPreferredMaxLength, that.applyPreferredMaxLength)
+            if (length > (preferredLength.toLong << 1)) preferredLength else length
           }
           while (index < maxApplyCompare && equal) {
             equal = this (index) == that(index)
@@ -91,7 +99,7 @@ trait IndexedSeq[+A] extends Seq[A]
     */
   protected def applyPreferredMaxLength: Int = IndexedSeqDefaults.defaultApplyPreferredMaxLength
 
-  override def iterableFactory: SeqFactory[IterableCC] = IndexedSeq
+  override def iterableFactory: SeqFactory[IndexedSeq] = IndexedSeq
 }
 
 object IndexedSeqDefaults {
@@ -104,7 +112,12 @@ object IndexedSeqDefaults {
 }
 
 @SerialVersionUID(3L)
-object IndexedSeq extends SeqFactory.Delegate[IndexedSeq](Vector)
+object IndexedSeq extends SeqFactory.Delegate[IndexedSeq](Vector) {
+  override def from[E](it: IterableOnce[E]): IndexedSeq[E] = it match {
+    case is: IndexedSeq[E] => is
+    case _ => super.from(it)
+  }
+}
 
 /** Base trait for immutable indexed Seq operations */
 trait IndexedSeqOps[+A, +CC[_], +C]
@@ -123,13 +136,19 @@ trait IndexedSeqOps[+A, +CC[_], +C]
 trait LinearSeq[+A]
   extends Seq[A]
     with collection.LinearSeq[A]
-    with LinearSeqOps[A, LinearSeq, LinearSeq[A]] {
+    with LinearSeqOps[A, LinearSeq, LinearSeq[A]]
+    with IterableFactoryDefaults[A, LinearSeq] {
 
-  override def iterableFactory: SeqFactory[IterableCC] = LinearSeq
+  override def iterableFactory: SeqFactory[LinearSeq] = LinearSeq
 }
 
 @SerialVersionUID(3L)
-object LinearSeq extends SeqFactory.Delegate[LinearSeq](List)
+object LinearSeq extends SeqFactory.Delegate[LinearSeq](List) {
+  override def from[E](it: IterableOnce[E]): LinearSeq[E] = it match {
+    case ls: LinearSeq[E] => ls
+    case _ => super.from(it)
+  }
+}
 
 trait LinearSeqOps[+A, +CC[X] <: LinearSeq[X], +C <: LinearSeq[A] with LinearSeqOps[A, CC, C]]
   extends Any with SeqOps[A, CC, C]

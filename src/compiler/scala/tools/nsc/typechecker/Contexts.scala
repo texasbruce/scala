@@ -15,12 +15,11 @@ package typechecker
 
 import scala.collection.{immutable, mutable}
 import scala.annotation.tailrec
-import scala.reflect.internal.util.{ shortClassOfInstance, SomeOfNil }
+import scala.reflect.internal.util.{ ReusableInstance, shortClassOfInstance, SomeOfNil }
 import scala.reflect.internal.Reporter
 
 /**
  *  @author  Martin Odersky
- *  @version 1.0
  */
 trait Contexts { self: Analyzer =>
   import global._
@@ -39,7 +38,6 @@ trait Contexts { self: Analyzer =>
     enclMethod = this
 
     override val depth = 0
-    override def nextEnclosing(p: Context => Boolean): Context = this
     override def enclosingContextChain: List[Context] = Nil
     override def implicitss: List[List[ImplicitInfo]] = Nil
     override def imports: List[ImportInfo] = Nil
@@ -52,6 +50,7 @@ trait Contexts { self: Analyzer =>
     val javaAndScalaList = JavaLangPackage :: ScalaPackage :: Nil
     val completeList     = JavaLangPackage :: ScalaPackage :: PredefModule :: Nil
   }
+  private lazy val NoJavaMemberFound = (NoType, NoSymbol)
 
   def ambiguousImports(imp1: ImportInfo, imp2: ImportInfo) =
     LookupAmbiguous(s"it is imported twice in the same scope by\n$imp1\nand $imp2")
@@ -73,16 +72,12 @@ trait Contexts { self: Analyzer =>
     for (imps <- allImportInfos.remove(unit)) {
       for (imp <- imps.distinct.reverse) {
         val used = allUsedSelectors(imp)
-        for (sel <- imp.tree.selectors if !isMaskImport(sel) && !used(sel))
+        for (sel <- imp.tree.selectors if !sel.isMask && !used(sel))
           reporter.warning(imp.posOf(sel), "Unused import")
       }
       allUsedSelectors --= imps
     }
   }
-
-  def isMaskImport(s: ImportSelector): Boolean = s.name != nme.WILDCARD && s.rename == nme.WILDCARD
-  def isIndividualImport(s: ImportSelector): Boolean = s.name != nme.WILDCARD && s.rename != nme.WILDCARD
-  def isWildcardImport(s: ImportSelector): Boolean = s.name == nme.WILDCARD
 
   var lastAccessCheckDetails: String = ""
 
@@ -358,37 +353,77 @@ trait Contexts { self: Analyzer =>
         val pruned = prune(List(result.tree), implicitDictionary.map(_._2), Nil)
         if(pruned.isEmpty) result
         else {
-          val (vsyms, vdefs) = pruned.map { case (vsym, rhs) =>
-            (vsym, ValDef(Modifiers(FINAL | SYNTHETIC), vsym.name.toTermName, TypeTree(rhs.tpe), rhs.changeOwner(owner -> vsym)))
-          }.unzip
+          val pos = result.tree.pos
+          val (dictClassSym, dictClass0) = {
+            val cname = newTypeName(typer.fresh.newName("LazyDefns$"))
+            val parents = addSerializable(definitions.AnyRefTpe)
+            val csym = owner.newClass(cname, pos, FINAL | SYNTHETIC)
+            csym.setInfo(ClassInfoType(parents, newScope, csym))
 
-          val mname = newTermName(typer.fresh.newName("LazyDefns$"))
-          val mdef =
-            ModuleDef(Modifiers(SYNTHETIC), mname,
-              gen.mkTemplate(gen.mkParents(NoMods, Nil), noSelfType, NoMods, ListOfNil, vdefs)
-            )
-
-          typer.namer.enterSym(mdef)
-
-          val mdef0 = typer.typed(mdef)
-          val msym0 = mdef0.symbol
-          val moduleClassInfo = mdef0.symbol.moduleClass.info
-          val vsyms0 = vsyms.map { vsym =>
-            moduleClassInfo.decl(vsym.name)
-          }
-
-          val vsymMap = (vsyms zip vsyms0).toMap
-
-          val substitutor = new TreeSymSubstituter(vsyms, vsyms0) {
-            override def transform(tree: Tree): Tree = tree match {
-              case i: Ident if vsymMap.contains(i.symbol) =>
-                super.transform(treeCopy.Select(i, gen.mkAttributedRef(msym0), i.name))
-              case _ => super.transform(tree)
+            val vdefs = pruned.map { case (vsym, rhs) =>
+              changeNonLocalOwners(rhs, vsym)
+              // We want the normal mechanism for generating accessors during
+              // typechecking to be applied, so we don't create symbols for
+              // these ValDefs ourselves.
+              atPos(pos)(ValDef(Modifiers(FINAL | SYNTHETIC), vsym.name.toTermName, TypeTree(rhs.tpe), rhs))
             }
-          }
-          val tree1 = substitutor(Block(mdef0, result.tree)) setType tree.tpe
 
-          new SearchResult(atPos(pos.focus)(tree1), result.subst, result.undetparams)
+            val cdef = {
+              val cdef0 = ClassDef(csym, NoMods, ListOfNil, vdefs, pos)
+              typer.namer.enterSym(cdef0)
+              typer.typed(cdef0)
+            }
+
+            (csym, cdef)
+          }
+
+          val dictTpe = dictClassSym.tpe_*
+
+          val preSyms = pruned.map(_._1)
+          val postSyms = preSyms.map(vsym => dictTpe.decl(vsym.name))
+
+          val symMap = (preSyms zip postSyms).toMap
+
+          val dictClass = {
+            class DictionarySubstituter extends TreeSymSubstituter(preSyms, postSyms) {
+              override def transform(tree: Tree): Tree = {
+                if(tree.hasExistingSymbol) {
+                  val sym = tree.symbol
+                  symMap.get(sym.owner).map(sym.owner = _)
+                }
+                super.transform(tree)
+              }
+            }
+            (new DictionarySubstituter)(dictClass0)
+          }
+
+          val dictSym = {
+            val vname = newTermName(typer.fresh.newName("lazyDefns$"))
+            owner.newValue(vname, pos, FINAL | SYNTHETIC).setInfo(dictTpe)
+          }
+
+          val dict = {
+            val rhs = atPos(pos)(Apply(Select(New(Ident(dictClassSym)), nme.CONSTRUCTOR), List()))
+            val vdef0 = ValDef(dictSym, rhs)
+            typer.namer.enterSym(vdef0)
+            typer.typed(vdef0)
+          }
+
+          val resultTree = {
+            class ReferenceSubstituter extends TreeSymSubstituter(preSyms, postSyms) {
+              override def transform(tree: Tree): Tree = tree match {
+                case i: Ident if symMap.contains(i.symbol) =>
+                  super.transform(atPos(i.pos)(treeCopy.Select(i, gen.mkAttributedRef(dictSym), i.name)))
+
+                case _ =>
+                  super.transform(tree)
+              }
+            }
+            (new ReferenceSubstituter)(result.tree)
+          }
+
+          val resultBlock = atPos(pos.focus)(Block(dictClass, dict, resultTree).setType(resultTree.tpe))
+          new SearchResult(resultBlock, result.subst, result.undetparams)
         }
       }
 
@@ -426,7 +461,8 @@ trait Contexts { self: Analyzer =>
     var savedTypeBounds: List[(Symbol, Type)] = List()
 
     /** The next enclosing context (potentially `this`) that is owned by a class or method */
-    def enclClassOrMethod: Context =
+    @tailrec
+    final def enclClassOrMethod: Context =
       if (!owner.exists || owner.isClass || owner.isMethod) this
       else outer.enclClassOrMethod
 
@@ -773,8 +809,9 @@ trait Contexts { self: Analyzer =>
       scopingCtx.outer
     }
 
-    def nextEnclosing(p: Context => Boolean): Context =
-      if (p(this)) this else outer.nextEnclosing(p)
+    @tailrec
+    final def nextEnclosing(p: Context => Boolean): Context =
+      if (this eq NoContext) this else if (p(this)) this else outer.nextEnclosing(p)
 
     final def outermostContextAtCurrentPos: Context = {
       var pos = tree.pos
@@ -979,7 +1016,8 @@ trait Contexts { self: Analyzer =>
     private var implicitsCache: List[ImplicitInfo] = null
     private var implicitsRunId = NoRunId
 
-    def resetCache(): Unit = {
+    @tailrec
+    final def resetCache(): Unit = {
       implicitsRunId = NoRunId
       implicitsCache = null
       if (outer != null && outer != this) outer.resetCache()
@@ -993,13 +1031,13 @@ trait Contexts { self: Analyzer =>
       sym.isImplicit &&
       isAccessible(sym, pre) &&
       !(
-        // [eed3si9n] ideally I'd like to do this: val fd = settings.isScala214 && sym.isDeprecated
+        // [eed3si9n] ideally I'd like to do this: val fd = currentRun.isScala214 && sym.isDeprecated
         // but implicit caching currently does not report sym.isDeprecated correctly.
-        settings.isScala214 && (sym == currentRun.runDefinitions.Predef_any2stringaddMethod)
+        currentRun.isScala214 && (sym == currentRun.runDefinitions.Predef_any2stringaddMethod)
       ) &&
       !(imported && {
         val e = scope.lookupEntry(name)
-        (e ne null) && (e.owner == scope) && (!settings.isScala212 || e.sym.exists)
+        (e ne null) && (e.owner == scope) && (!currentRun.isScala212 || e.sym.exists)
       })
 
     /** Do something with the symbols with name `name` imported via the import in `imp`,
@@ -1021,16 +1059,16 @@ trait Contexts { self: Analyzer =>
       def collect(sels: List[ImportSelector]): List[ImplicitInfo] = sels match {
         case List() =>
           List()
-        case List(ImportSelector(nme.WILDCARD, _, _, _)) =>
+        case sel :: Nil if sel.isWildcard =>
           // Using pre.implicitMembers seems to exposes a problem with out-dated symbols in the IDE,
           // see the example in https://www.assembla.com/spaces/scala-ide/tickets/1002552#/activity/ticket
           // I haven't been able to boil that down the an automated test yet.
           // Looking up implicit members in the package, rather than package object, here is at least
           // consistent with what is done just below for named imports.
           collectImplicits(qual.tpe.implicitMembers, pre, imported = true)
-        case ImportSelector(from, _, to, _) :: sels1 =>
-          var impls = collect(sels1) filter (info => info.name != from)
-          if (to != nme.WILDCARD) {
+        case (sel @ ImportSelector(from, _, to, _)) :: sels1 =>
+          var impls = collect(sels1).filter(info => info.name != from)
+          if (!sel.isMask) {
             withQualifyingImplicitAlternatives(imp, to, pre) { sym =>
               impls = new ImplicitInfo(to, pre, sym) :: impls
             }
@@ -1109,7 +1147,7 @@ trait Contexts { self: Analyzer =>
      *    package object foo { type InputStream = java.io.InputStream }
      *    import foo._, java.io._
      */
-    private def resolveAmbiguousImport(name: Name, imp1: ImportInfo, imp2: ImportInfo): Option[ImportInfo] = {
+    private[Contexts] def resolveAmbiguousImport(name: Name, imp1: ImportInfo, imp2: ImportInfo): Option[ImportInfo] = {
       val imp1Explicit = imp1 isExplicitImport name
       val imp2Explicit = imp2 isExplicitImport name
       val ambiguous    = if (imp1.depth == imp2.depth) imp1Explicit == imp2Explicit else !imp1Explicit && imp2Explicit
@@ -1153,6 +1191,14 @@ trait Contexts { self: Analyzer =>
       )
     }
 
+    def isPackageOwnedInDifferentUnit(s: Symbol): Boolean =
+      if (s.isOverloaded) s.alternatives.exists(isPackageOwnedInDifferentUnit)
+      else (s.isDefinedInPackage && (
+           !currentRun.compiles(s)
+        || unit.exists && s.sourceFile != unit.source.file)
+      )
+
+
     /** Does the import just import the defined symbol?
      *
      *  `import p._ ; package p { S }` where `p.S` is defined elsewhere.
@@ -1165,7 +1211,7 @@ trait Contexts { self: Analyzer =>
      *
      *  This method doesn't use the ImportInfo, `imp1`.
      */
-    private def reconcileAmbiguousImportAndDef(name: Name, impSym: Symbol, defSym: Symbol): Boolean = {
+    private[Contexts] def reconcileAmbiguousImportAndDef(name: Name, impSym: Symbol, defSym: Symbol): Boolean = {
       val res = impSym == defSym
       if (res) log(s"Suppressing ambiguous import, taking $defSym for $name")
       res
@@ -1174,15 +1220,15 @@ trait Contexts { self: Analyzer =>
     /** The symbol with name `name` imported via the import in `imp`,
      *  if any such symbol is accessible from this context.
      */
-    private def importedAccessibleSymbol(imp: ImportInfo, name: Name, requireExplicit: Boolean, record: Boolean): Symbol =
+    private[Contexts] def importedAccessibleSymbol(imp: ImportInfo, name: Name, requireExplicit: Boolean, record: Boolean): Symbol =
       if (isExcludedRootImport(imp)) NoSymbol
       else imp.importedSymbol(name, requireExplicit, record) filter (s => isAccessible(s, imp.qual.tpe, superAccess = false))
 
     private def isExcludedRootImport(imp: ImportInfo): Boolean =
       imp.isRootImport && excludedRootImportsCached.get(unit).exists(_.contains(imp.qual.symbol))
 
-    private def requiresQualifier(s: Symbol): Boolean = (
-         s.owner.isClass
+    private[Contexts] def requiresQualifier(s: Symbol): Boolean = (
+          s.owner.isClass
       && !s.owner.isPackageClass
       && !s.isTypeParameterOrSkolem
       && !s.isExistentiallyBound
@@ -1198,17 +1244,89 @@ trait Contexts { self: Analyzer =>
 
     def isNameInScope(name: Name) = lookupSymbol(name, _ => true).isSuccess
 
-    /** Find the symbol of a simple name starting from this context.
-     *  All names are filtered through the "qualifies" predicate,
-     *  the search continuing as long as no qualifying name is found.
-     */
-    def lookupSymbol(name: Name, qualifies: Symbol => Boolean): NameLookup = {
-      var lookupError: NameLookup  = null       // set to non-null if a definite error is encountered
-      var inaccessible: NameLookup = null       // records inaccessible symbol for error reporting in case none is found
-      var defSym: Symbol           = NoSymbol   // the directly found symbol
-      var pre: Type                = NoPrefix   // the prefix type of defSym, if a class member
-      var cx: Context              = this       // the context under consideration
-      var symbolDepth: Int         = -1         // the depth of the directly found symbol
+    def lookupSymbol(name: Name, qualifies: Symbol => Boolean): NameLookup =
+      symbolLookupCache.using(_(this, name)(qualifies))
+
+    final def lookupCompanionInIncompleteOwner(original: Symbol): Symbol = {
+      // Must have both a class and module symbol, so that `{ class C; def C }` or `{ type T; object T }` are not companions.
+      def isCompanion(sym: Symbol): Boolean =
+        (original.isModule && sym.isClass || sym.isModule && original.isClass) && sym.isCoDefinedWith(original)
+      lookupSibling(original, original.name.companionName).filter(isCompanion)
+    }
+
+    final def lookupSibling(original: Symbol, name: Name): Symbol = {
+      /* Search scopes in current and enclosing contexts for the definition of `symbol` */
+      def lookupScopeEntry(symbol: Symbol): ScopeEntry = {
+        var res: ScopeEntry = null
+        var ctx = this
+        while (res == null && ctx.outer != ctx) {
+          val s = ctx.scope lookupSymbolEntry symbol
+          if (s != null)
+            res = s
+          else
+            ctx = ctx.outer
+        }
+        res
+      }
+
+      // Must be owned by the same Scope, to ensure that in
+      // `{ class C; { ...; object C } }`, the class is not seen as a companion of the object.
+      lookupScopeEntry(original) match {
+        case null => NoSymbol
+        case entry =>
+          entry.owner.lookupNameInSameScopeAs(original, name)
+      }
+    }
+
+    final def javaFindMember(pre: Type, name: Name, qualifies: Symbol => Boolean): (Type, Symbol) = {
+      val sym = pre.member(name).filter(qualifies)
+      val preSym = pre.typeSymbol
+      if (sym.exists || preSym.isPackageClass || !preSym.isClass) (pre, sym)
+      else {
+        // In Java code, static innner classes, which we model as members of the companion object,
+        // can be referenced from an ident in a subclass or by a selection prefixed by the subclass.
+        val toSearch = if (preSym.isModuleClass) companionSymbolOf(pre.typeSymbol.sourceModule, this).baseClasses else preSym.baseClasses
+        toSearch.iterator.map { bc =>
+          val pre1 = bc.typeOfThis
+          val found = pre1.decl(name)
+          found.filter(qualifies) match {
+            case NoSymbol =>
+              val companionModule = companionSymbolOf(pre1.typeSymbol, this)
+              val pre2 = companionModule.typeOfThis
+              val found = pre2.decl(name).filter(qualifies)
+              found match {
+                case NoSymbol => NoJavaMemberFound
+                case sym => (pre2, sym)
+              }
+            case sym => (pre1, sym)
+          }
+        }.find(_._2 ne NoSymbol).getOrElse(NoJavaMemberFound)
+      }
+    }
+
+  } //class Context
+
+  /** Find the symbol of a simple name starting from this context.
+   *  All names are filtered through the "qualifies" predicate,
+   *  the search continuing as long as no qualifying name is found.
+   */
+  // OPT: moved this into a (cached) object to avoid costly and non-eliminated {Object,Int}Ref allocations
+  private[Contexts] final val symbolLookupCache = ReusableInstance[SymbolLookup](new SymbolLookup)
+  private[Contexts] final class SymbolLookup {
+    private[this] var lookupError: NameLookup  = _ // set to non-null if a definite error is encountered
+    private[this] var inaccessible: NameLookup = _ // records inaccessible symbol for error reporting in case none is found
+    private[this] var defSym: Symbol           = _ // the directly found symbol
+    private[this] var pre: Type                = _ // the prefix type of defSym, if a class member
+    private[this] var cx: Context              = _ // the context under consideration
+    private[this] var symbolDepth: Int         = _ // the depth of the directly found symbol
+
+    def apply(thisContext: Context, name: Name)(qualifies: Symbol => Boolean): NameLookup = {
+      lookupError  = null
+      inaccessible = null
+      defSym       = NoSymbol
+      pre          = NoPrefix
+      cx           = thisContext
+      symbolDepth  = -1
 
       def finish(qual: Tree, sym: Symbol): NameLookup = (
         if (lookupError ne null) lookupError
@@ -1219,21 +1337,27 @@ trait Contexts { self: Analyzer =>
         }
       )
       def finishDefSym(sym: Symbol, pre0: Type): NameLookup = {
-        val qual = if (requiresQualifier(sym)) gen.mkAttributedQualifier(pre0) else EmptyTree
+        val qual =
+          if (!thisContext.unit.isJava && thisContext.requiresQualifier(sym)) gen.mkAttributedQualifier(pre0)
+          else EmptyTree
         finish(qual, sym)
       }
 
-      def lookupInPrefix(name: Name)    = {
-        val sym = pre.member(name).filter(qualifies)
-        def isNonPackageNoModuleClass(sym: Symbol) =
-          sym.isClass && !sym.isModuleClass && !sym.isPackageClass
-        if (!sym.exists && unit.isJava && isNonPackageNoModuleClass(pre.typeSymbol)) {
-          // TODO factor out duplication with Typer::inCompanionForJavaStatic
-          val pre1 = companionSymbolOf(pre.typeSymbol, this).typeOfThis
-          pre1.member(name).filter(qualifies).andAlso(_ => pre = pre1)
-        } else sym
+      def lookupInPrefix(name: Name): Symbol = {
+        if (thisContext.unit.isJava) {
+          thisContext.javaFindMember(pre, name, qualifies) match {
+            case (_, NoSymbol) =>
+              NoSymbol
+            case (pre1, sym) =>
+              pre = pre1
+              sym
+          }
+        } else {
+          pre.member(name).filter(qualifies)
+        }
       }
-      def accessibleInPrefix(s: Symbol) = isAccessible(s, pre, superAccess = false)
+      def accessibleInPrefix(s: Symbol) =
+        thisContext.isAccessible(s, pre, superAccess = false)
 
       def searchPrefix = {
         cx = cx.enclClass
@@ -1298,11 +1422,11 @@ trait Contexts { self: Analyzer =>
         symbolDepth = cx.depth
 
       var impSym: Symbol = NoSymbol
-      val importCursor = new ImportCursor(this, name)
+      val importCursor = new ImportCursor(thisContext, name)
       import importCursor.{imp1, imp2}
 
       def lookupImport(imp: ImportInfo, requireExplicit: Boolean) =
-        importedAccessibleSymbol(imp, name, requireExplicit, record = true) filter qualifies
+        thisContext.importedAccessibleSymbol(imp, name, requireExplicit, record = true) filter qualifies
 
       /* Java: A single-type-import declaration d in a compilation unit c of package p
        * that imports a type named n shadows, throughout c, the declarations of:
@@ -1320,10 +1444,10 @@ trait Contexts { self: Analyzer =>
        *  4) Definitions made available by a package clause, but not also defined in the same compilation unit
        *     as the reference, have lowest precedence. Also "root" imports added implicitly.
        */
-      def foreignDefined = defSym.exists && isPackageOwnedInDifferentUnit(defSym)  // SI-2458
+      def foreignDefined = defSym.exists && thisContext.isPackageOwnedInDifferentUnit(defSym)  // SI-2458
       // can an import at this depth possibly shadow the definition found in scope if any?
       def importCanShadowAtDepth(imp: ImportInfo) = imp.depth > symbolDepth || (
-        if (unit.isJava) imp.depth == symbolDepth && imp.isExplicitImport(name)
+        if (thisContext.unit.isJava) imp.depth == symbolDepth && imp.isExplicitImport(name)
         else foreignDefined
       )
 
@@ -1344,7 +1468,7 @@ trait Contexts { self: Analyzer =>
         else if (impSym.isError || impSym.name == nme.CONSTRUCTOR)
           impSym = NoSymbol
         // Try to reconcile them before giving up, at least if the def is not visible
-        else if (foreignDefined && reconcileAmbiguousImportAndDef(name, impSym, defSym))
+        else if (foreignDefined && thisContext.reconcileAmbiguousImportAndDef(name, impSym, defSym))
           impSym = NoSymbol
         // Otherwise they are irreconcilably ambiguous
         else
@@ -1352,8 +1476,7 @@ trait Contexts { self: Analyzer =>
       }
 
       // At this point only one or the other of defSym and impSym might be set.
-      if (defSym.exists)
-        finishDefSym(defSym, pre)
+      if (defSym.exists) finishDefSym(defSym, pre)
       else if (impSym.exists) {
         // If we find a competitor imp2 which imports the same name, possible outcomes are:
         //
@@ -1374,13 +1497,13 @@ trait Contexts { self: Analyzer =>
           // actually used.
           val other = lookupImport(imp2, requireExplicit = !importCursor.sameDepth)
 
-          def imp1wins(): Unit = { importCursor.advanceImp2() }
-          def imp2wins(): Unit = { impSym = other; importCursor.advanceImp1Imp2() }
+          @inline def imp1wins(): Unit = { importCursor.advanceImp2() }
+          @inline def imp2wins(): Unit = { impSym = other; importCursor.advanceImp1Imp2() }
           if (!other.exists) // imp1 wins; drop imp2 and continue.
             imp1wins()
           else if (importCursor.imp2Wins) // imp2 wins; drop imp1 and continue.
             imp2wins()
-          else resolveAmbiguousImport(name, imp1, imp2) match {
+          else thisContext.resolveAmbiguousImport(name, imp1, imp2) match {
             case Some(imp) => if (imp eq imp1) imp1wins() else imp2wins()
             case _         => lookupError = ambiguousImports(imp1, imp2)
           }
@@ -1390,44 +1513,6 @@ trait Contexts { self: Analyzer =>
       }
       else finish(EmptyTree, NoSymbol)
     }
-
-    final def lookupCompanionInIncompleteOwner(original: Symbol): Symbol = {
-      // Must have both a class and module symbol, so that `{ class C; def C }` or `{ type T; object T }` are not companions.
-      def isCompanion(sym: Symbol): Boolean =
-        (original.isModule && sym.isClass || sym.isModule && original.isClass) && sym.isCoDefinedWith(original)
-      lookupSibling(original, original.name.companionName).filter(isCompanion)
-    }
-
-    final def lookupSibling(original: Symbol, name: Name): Symbol = {
-      /* Search scopes in current and enclosing contexts for the definition of `symbol` */
-      def lookupScopeEntry(symbol: Symbol): ScopeEntry = {
-        var res: ScopeEntry = null
-        var ctx = this
-        while (res == null && ctx.outer != ctx) {
-          val s = ctx.scope lookupSymbolEntry symbol
-          if (s != null)
-            res = s
-          else
-            ctx = ctx.outer
-        }
-        res
-      }
-
-      // Must be owned by the same Scope, to ensure that in
-      // `{ class C; { ...; object C } }`, the class is not seen as a companion of the object.
-      lookupScopeEntry(original) match {
-        case null => NoSymbol
-        case entry =>
-          entry.owner.lookupNameInSameScopeAs(original, name)
-      }
-    }
-
-    def isPackageOwnedInDifferentUnit(s: Symbol): Boolean =
-      if (s.isOverloaded) s.alternatives.exists(isPackageOwnedInDifferentUnit)
-      else (s.isDefinedInPackage && (
-           !currentRun.compiles(s)
-        || unit.exists && s.sourceFile != unit.source.file)
-      )
   }
 
   /** A `Context` focussed on an `Import` tree */
@@ -1634,8 +1719,7 @@ trait Contexts { self: Analyzer =>
     }
 
     /** Is name imported explicitly, not via wildcard? */
-    def isExplicitImport(name: Name): Boolean =
-      tree.selectors exists (_.rename == name.toTermName)
+    def isExplicitImport(name: Name): Boolean = tree.selectors.exists(_.introduces(name))
 
     /** The symbol with name `name` imported from import clause `tree`. */
     def importedSymbol(name: Name): Symbol = importedSymbol(name, requireExplicit = false, record = true)
@@ -1654,14 +1738,14 @@ trait Contexts { self: Analyzer =>
       var result: Symbol = NoSymbol
       var renamed = false
       var selectors = tree.selectors
-      def current = selectors.head
+      @inline def current = selectors.head
       while ((selectors ne Nil) && result == NoSymbol) {
-        if (current.rename == name.toTermName)
-          result = qual.tpe.nonLocalMember( // new to address #2733: consider only non-local members for imports
+        if (current.introduces(name))
+          result = qual.tpe.nonLocalMember( // #2733: consider only non-local members for imports
             if (name.isTypeName) current.name.toTypeName else current.name)
-        else if (current.name == name.toTermName)
+        else if (!current.isWildcard && current.hasName(name))
           renamed = true
-        else if (current.name == nme.WILDCARD && !renamed && !requireExplicit)
+        else if (current.isWildcard && !renamed && !requireExplicit)
           result = qual.tpe.nonLocalMember(name)
 
         if (result == NoSymbol)
@@ -1680,19 +1764,20 @@ trait Contexts { self: Analyzer =>
       else NoSymbol
     }
     private def selectorString(s: ImportSelector): String = {
-      if (s.name == nme.WILDCARD && s.rename == null) "_"
-      else if (s.name == s.rename) "" + s.name
-      else s.name + " => " + s.rename
+      if (s.isWildcard) "_"
+      else if (s.isRename) s.name + " => " + s.rename
+      else "" + s.name
     }
 
     def allImportedSymbols: Iterable[Symbol] =
       importableMembers(qual.tpe) flatMap (transformImport(tree.selectors, _))
 
+    @tailrec
     private def transformImport(selectors: List[ImportSelector], sym: Symbol): List[Symbol] = selectors match {
-      case List() => List()
-      case List(ImportSelector(nme.WILDCARD, _, _, _)) => List(sym)
-      case ImportSelector(from, _, to, _) :: _ if from == sym.name =>
-        if (to == nme.WILDCARD) List()
+      case Nil => Nil
+      case sel :: Nil if sel.isWildcard => List(sym)
+      case (sel @ ImportSelector(from, _, to, _)) :: _ if from == (if (from.isTermName) sym.name.toTermName else sym.name.toTypeName) =>
+        if (sel.isMask) Nil
         else List(sym.cloneSymbol(sym.owner, sym.rawflags, to))
       case _ :: rest => transformImport(rest, sym)
     }

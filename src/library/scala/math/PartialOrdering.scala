@@ -36,9 +36,6 @@ package math
  *  `lteq(x, y) && lteq(y, x) == '''true'''`. This equivalence relation is
  *  exposed as the `equiv` method, inherited from the
  *  [[scala.math.Equiv Equiv]] trait.
- *
- *  @author  Geoffrey Washburn
- *  @since 2.7
  */
 
 trait PartialOrdering[T] extends Equiv[T] {
@@ -84,4 +81,8 @@ trait PartialOrdering[T] extends Equiv[T] {
     override def gt(x: T, y: T) = outer.gt(y, x)
     override def equiv(x: T, y: T) = outer.equiv(y, x)
   }
+}
+
+object PartialOrdering {
+  @inline def apply[T](implicit ev: PartialOrdering[T]): PartialOrdering[T] = ev
 }

@@ -15,6 +15,8 @@ package immutable
 
 import java.io.{ObjectInputStream, ObjectOutputStream}
 
+import scala.annotation.unchecked.uncheckedVariance
+import scala.collection.generic.DefaultSerializable
 import scala.collection.mutable.{Builder, ListBuffer}
 
 /** `Queue` objects implement data structures that allow to
@@ -28,8 +30,6 @@ import scala.collection.mutable.{Builder, ListBuffer}
   *  where a pivot is required, in which case, a cost of `O(n)` is incurred, where `n` is the number of elements in the queue. When this happens,
   *  `n` remove operations with `O(1)` cost are guaranteed. Removing an item is on average `O(1)`.
   *
-  *  @author  Erik Stenman
-  *  @since   1
   *  @see [[http://docs.scala-lang.org/overviews/collections/concrete-immutable-collection-classes.html#immutable-queues "Scala's Collection Library overview"]]
   *  section on `Immutable Queues` for more information.
   *
@@ -44,7 +44,9 @@ sealed class Queue[+A] protected(protected val in: List[A], protected val out: L
     with LinearSeq[A]
     with LinearSeqOps[A, Queue, Queue[A]]
     with StrictOptimizedLinearSeqOps[A, Queue, Queue[A]]
-    with StrictOptimizedSeqOps[A, Queue, Queue[A]] {
+    with StrictOptimizedSeqOps[A, Queue, Queue[A]]
+    with IterableFactoryDefaults[A, Queue]
+    with DefaultSerializable {
 
   override def iterableFactory: SeqFactory[Queue] = Queue
 

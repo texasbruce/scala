@@ -21,7 +21,6 @@ import scala.annotation.tailrec
 import scala.annotation.unchecked.uncheckedVariance
 
 /** Utility class for integer maps.
-  *  @author David MacIver
   */
 private[immutable] object IntMapUtils extends BitOperations.Int {
   def branchMask(i: Int, j: Int) = highestOneBit(i ^ j)
@@ -45,7 +44,6 @@ import IntMapUtils._
 /** A companion object for integer maps.
   *
   *  @define Coll  `IntMap`
-  *  @since 2.7
   */
 object IntMap {
   def empty[T] : IntMap[T]  = IntMap.Nil
@@ -133,6 +131,7 @@ private[immutable] abstract class IntMapIterator[V, T](it: IntMap[V]) extends Ab
   def valueOf(tip: IntMap.Tip[V]): T
 
   def hasNext = index != 0
+  @tailrec
   final def next(): T =
     pop match {
       case IntMap.Bin(_,_, t@IntMap.Tip(_, _), right) => {
@@ -173,15 +172,14 @@ import IntMap._
   *
   *  @tparam T    type of the values associated with integer keys.
   *
-  *  @since 2.7
   *  @define Coll `immutable.IntMap`
   *  @define coll immutable integer map
   *  @define mayNotTerminateInf
   *  @define willNotTerminateInf
   */
 sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
-  with MapOps[Int, T, Map, IntMap[T]]
-  with StrictOptimizedIterableOps[(Int, T), Iterable, IntMap[T]] {
+  with StrictOptimizedMapOps[Int, T, Map, IntMap[T]]
+  with Serializable {
 
   override protected def fromSpecific(coll: scala.collection.IterableOnce[(Int, T) @uncheckedVariance]): IntMap[T] =
     intMapFrom[T](coll)
@@ -220,6 +218,12 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
   override final def foreach[U](f: ((Int, T)) => U): Unit = this match {
     case IntMap.Bin(_, _, left, right) => { left.foreach(f); right.foreach(f) }
     case IntMap.Tip(key, value) => f((key, value))
+    case IntMap.Nil =>
+  }
+
+  override def foreachEntry[U](f: (IntMapUtils.Int, T) => U): Unit = this match {
+    case IntMap.Bin(_, _, left, right) => { left.foreachEntry(f); right.foreachEntry(f) }
+    case IntMap.Tip(key, value) => f(key, value)
     case IntMap.Nil =>
   }
 
@@ -285,12 +289,14 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
     case IntMap.Bin(_, _, left, right) => left.size + right.size
   }
 
+  @tailrec
   final def get(key: Int): Option[T] = this match {
     case IntMap.Bin(prefix, mask, left, right) => if (zero(key, mask)) left.get(key) else right.get(key)
     case IntMap.Tip(key2, value) => if (key == key2) Some(value) else None
     case IntMap.Nil => None
   }
 
+  @tailrec
   final override def getOrElse[S >: T](key: Int, default: => S): S = this match {
     case IntMap.Nil => default
     case IntMap.Tip(key2, value) => if (key == key2) value else default
@@ -298,6 +304,7 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
       if (zero(key, mask)) left.getOrElse(key, default) else right.getOrElse(key, default)
   }
 
+  @tailrec
   final override def apply(key: Int): T = this match {
     case IntMap.Bin(prefix, mask, left, right) => if (zero(key, mask)) left(key) else right(key)
     case IntMap.Tip(key2, value) => if (key == key2) value else throw new IllegalArgumentException("Key not found")
@@ -324,7 +331,7 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
   override def concat[V1 >: T](that: collection.IterableOnce[(Int, V1)]): IntMap[V1] =
     super.concat(that).asInstanceOf[IntMap[V1]] // Already has corect type but not declared as such
 
-  override def ++ [V1 >: T](that: collection.Iterable[(Int, V1)]): IntMap[V1] = concat(that)
+  override def ++ [V1 >: T](that: collection.IterableOnce[(Int, V1)]): IntMap[V1] = concat(that)
 
   def collect[V2](pf: PartialFunction[(Int, T), (Int, V2)]): IntMap[V2] =
     strictOptimizedCollect(IntMap.newBuilder[V2], pf)
@@ -357,7 +364,7 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
     case IntMap.Nil => IntMap.Tip(key, value)
   }
 
-  def remove (key: Int): IntMap[T] = this match {
+  def removed (key: Int): IntMap[T] = this match {
     case IntMap.Bin(prefix, mask, left, right) =>
       if (!hasMatch(key, prefix, mask)) this
       else if (zero(key, mask)) bin(prefix, mask, left - key, right)
@@ -492,5 +499,5 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
     case IntMap.Nil => throw new IllegalStateException("Empty set")
   }
 
-  override protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(IntMap.toFactory[T](IntMap), this)
+  protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(IntMap.toFactory[T](IntMap), this)
 }

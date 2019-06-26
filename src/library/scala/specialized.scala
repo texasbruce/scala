@@ -25,12 +25,10 @@ import Specializable._
  *  {{{
  *    class MyList[@specialized(Int, Double, Boolean) T] ..
  *  }}}
- *
- *  @since 2.8
  */
 // class tspecialized[T](group: Group[T]) extends scala.annotation.StaticAnnotation {
 
-class specialized(group: SpecializedGroup) extends scala.annotation.StaticAnnotation {
+final class specialized(group: SpecializedGroup) extends scala.annotation.StaticAnnotation {
   def this(types: Specializable*) = this(new Group(types.toList))
   def this() = this(Primitives)
 }

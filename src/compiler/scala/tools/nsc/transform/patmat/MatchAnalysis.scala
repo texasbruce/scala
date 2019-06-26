@@ -12,6 +12,7 @@
 
 package scala.tools.nsc.transform.patmat
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.reflect.internal.util.StatisticsStatics
 
@@ -125,6 +126,7 @@ trait TreeAndTypeAnalysis extends Debugging {
             // enumerate only direct subclasses,
             // subclasses of subclasses are enumerated in the next iteration
             // and added to a new group
+            @tailrec
             def groupChildren(wl: List[Symbol],
                               acc: List[List[Type]]): List[List[Type]] = wl match {
               case hd :: tl =>
@@ -309,7 +311,10 @@ trait MatchApproximation extends TreeAndTypeAnalysis with ScalaLogic with MatchT
           // debug.patmat ("normalize subst: "+ normalize)
 
           val okSubst = Substitution(unboundFrom.toList, unboundTo.toList) // it's important substitution does not duplicate trees here -- it helps to keep hash consing simple, anyway
-          pointsToBound ++= okSubst.from.lazyZip(okSubst.to).collect { case (f, t) if pointsToBound.exists(sym => t.exists(_.symbol == sym)) => f }
+          foreach2(okSubst.from, okSubst.to){(f, t) =>
+            if (pointsToBound exists (sym => t.exists(_.symbol == sym)))
+              pointsToBound += f
+          }
           // debug.patmat("pointsToBound: "+ pointsToBound)
 
           accumSubst >>= okSubst
@@ -606,7 +611,7 @@ trait MatchAnalysis extends MatchApproximation {
       override def coveredBy(other: CounterExample): Boolean =
         other match {
           case other@ListExample(_) =>
-            this == other || ((elems.length == other.elems.length) && (elems zip other.elems).forall{case (a, b) => a coveredBy b})
+            this == other || ((elems.sizeCompare(other.elems) == 0) && (elems zip other.elems).forall{case (a, b) => a coveredBy b})
           case _ => super.coveredBy(other)
         }
 
@@ -618,7 +623,7 @@ trait MatchAnalysis extends MatchApproximation {
       override def coveredBy(other: CounterExample): Boolean =
         other match {
           case TupleExample(otherArgs) =>
-            this == other || ((ctorArgs.length == otherArgs.length) && (ctorArgs zip otherArgs).forall{case (a, b) => a coveredBy b})
+            this == other || ((ctorArgs.sizeCompare(otherArgs) == 0) && (ctorArgs zip otherArgs).forall{case (a, b) => a coveredBy b})
           case _ => super.coveredBy(other)
         }
     }

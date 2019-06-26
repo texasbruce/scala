@@ -13,7 +13,10 @@
 package scala.collection
 package immutable
 
-import mutable.{Builder, StringBuilder}
+import scala.Predef.{wrapString => _, assert}
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.convert.impl.CharStringStepper
+import scala.collection.mutable.{Builder, StringBuilder}
 
 /**
   *  This class serves as a wrapper augmenting `String`s with all the operations
@@ -25,18 +28,19 @@ import mutable.{Builder, StringBuilder}
   *
   *  @param self    a string contained within this wrapped string
   *
-  *  @since 2.8
   *  @define Coll `WrappedString`
   *  @define coll wrapped string
   */
+@SerialVersionUID(3L)
 final class WrappedString(private val self: String) extends AbstractSeq[Char] with IndexedSeq[Char]
-  with IndexedSeqOps[Char, IndexedSeq, WrappedString] {
+  with IndexedSeqOps[Char, IndexedSeq, WrappedString]
+  with Serializable {
 
   def apply(i: Int): Char = self.charAt(i)
 
-  override protected def fromSpecific(coll: scala.collection.IterableOnce[Char]): WrappedString =
-    WrappedString.fromSpecific(coll)
+  override protected def fromSpecific(coll: scala.collection.IterableOnce[Char]): WrappedString = WrappedString.fromSpecific(coll)
   override protected def newSpecificBuilder: Builder[Char, WrappedString] = WrappedString.newBuilder
+  override def empty: WrappedString = WrappedString.empty
 
   override def slice(from: Int, until: Int): WrappedString = {
     val start = if (from < 0) 0 else from
@@ -49,6 +53,17 @@ final class WrappedString(private val self: String) extends AbstractSeq[Char] wi
   override def length = self.length
   override def toString = self
   override def view: StringView = new StringView(self)
+
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[Char, S]): S with EfficientSplit = {
+    val st = new CharStringStepper(self, 0, self.length)
+    val r =
+      if (shape.shape == StepperShape.CharShape) st
+      else {
+        assert(shape.shape == StepperShape.ReferenceShape, s"unexpected StepperShape: $shape")
+        AnyStepper.ofParIntStepper(st)
+      }
+    r.asInstanceOf[S with EfficientSplit]
+  }
 
   override def startsWith[B >: Char](that: IterableOnce[B], offset: Int = 0): Boolean =
     that match {
@@ -64,25 +79,13 @@ final class WrappedString(private val self: String) extends AbstractSeq[Char] wi
 
   override def indexOf[B >: Char](elem: B, from: Int = 0): Int = elem match {
     case c: Char => self.indexOf(c, from)
-    case _       => super.indexOf(elem)
+    case _       => super.indexOf(elem, from)
   }
 
   override def lastIndexOf[B >: Char](elem: B, end: Int = length - 1): Int =
     elem match {
       case c: Char => self.lastIndexOf(c, end)
       case _       => super.lastIndexOf(elem, end)
-    }
-
-  override def indexOfSlice[B >: Char](that: collection.Seq[B], from: Int = 0): Int =
-    that match {
-      case s: WrappedString => self.indexOfSlice(s.self, from)
-      case _                => super.indexOfSlice(that, from)
-    }
-
-  override def lastIndexOfSlice[B >: Char](that: collection.Seq[B], end: Int = length - 1): Int =
-    that match {
-      case s: WrappedString => self.lastIndexOfSlice(s, end)
-      case _                => super.lastIndexOfSlice(that, end)
     }
 
   override def copyToArray[B >: Char](xs: Array[B], start: Int): Int =
@@ -103,6 +106,11 @@ final class WrappedString(private val self: String) extends AbstractSeq[Char] wi
       case _                => super.appendedAll(suffix)
     }
 
+  override def sameElements[B >: Char](o: IterableOnce[B]) = o match {
+    case s: WrappedString => self == s.self
+    case _                => super.sameElements(o)
+  }
+
   override protected[this] def className = "WrappedString"
 
   override protected final def applyPreferredMaxLength: Int = Int.MaxValue
@@ -115,8 +123,6 @@ final class WrappedString(private val self: String) extends AbstractSeq[Char] wi
 }
 
 /** A companion object for wrapped strings.
-  *
-  *  @since 2.8
   */
 @SerialVersionUID(3L)
 object WrappedString extends SpecificIterableFactory[Char, WrappedString] {

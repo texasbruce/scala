@@ -17,6 +17,7 @@ import symtab._
 import Flags._
 import scala.annotation.tailrec
 import scala.collection.mutable
+import scala.reflect.NameTransformer
 
 
 abstract class Mixin extends Transform with ast.TreeDSL with AccessorSynthesis {
@@ -98,26 +99,45 @@ abstract class Mixin extends Transform with ast.TreeDSL with AccessorSynthesis {
   /** Returns the symbol that is accessed by a super-accessor in a mixin composition.
    *
    *  @param base       The class in which everything is mixed together
-   *  @param member     The symbol statically referred to by the superaccessor in the trait
+   *  @param acc        The symbol statically referred to by the superaccessor in the trait
    *  @param mixinClass The mixin class that produced the superaccessor
    */
-  private def rebindSuper(base: Symbol, member: Symbol, mixinClass: Symbol): Symbol =
+  private def rebindSuper(base: Symbol, acc: Symbol, mixinClass: Symbol): Symbol = {
+    val site = base.thisType
+
     exitingSpecialize {
-      var bcs = base.info.baseClasses.dropWhile(mixinClass != _).tail
+      // the specialized version T$sp of a trait T will have a super accessor that has the same alias
+      // as the super accessor in trait T; we must rebind super
+      // from the vantage point of the original trait T, not the specialized T$sp
+      // (it's inserted in the base class seq late in the game and doesn't count as a super class in the super-call scheme)
+      val superTargetClass = if (mixinClass.isSpecialized) unspecializedSymbol(mixinClass) else mixinClass
+      var bcs = base.info.baseClasses.dropWhile(superTargetClass != _).tail
       var sym: Symbol = NoSymbol
-      debuglog("starting rebindsuper " + base + " " + member + ":" + member.tpe +
-            " " + mixinClass + " " + base.info.baseClasses + "/" + bcs)
-      while (!bcs.isEmpty && sym == NoSymbol) {
-        if (settings.debug) {
-          val other = bcs.head.info.nonPrivateDecl(member.name)
-          debuglog("rebindsuper " + bcs.head + " " + other + " " + other.tpe +
-              " " + other.isDeferred)
-        }
-        sym = member.matchingSymbol(bcs.head, base.thisType).suchThat(sym => !sym.hasFlag(DEFERRED | BRIDGE))
+
+      // println(s"starting rebindsuper $base mixing in from $mixinClass: $acc : ${acc.tpe} of ${acc.owner} ; looking for super in $bcs (all bases: ${base.info.baseClasses})")
+
+      // don't rebind to specialized members unless we're looking for the super of a specialized member,
+      // since we can't jump back and forth between the unspecialized name and specialized one
+      // (So we jump into the non-specialized world and stay there until we hit our super.)
+      val likeSpecialized = if (acc.isSpecialized) 0 else SPECIALIZED
+
+      while (sym == NoSymbol && bcs.nonEmpty) {
+        sym = acc.matchingSymbol(bcs.head, site).suchThat(sym => !sym.hasFlag(DEFERRED | BRIDGE | likeSpecialized))
         bcs = bcs.tail
       }
+
+      // println(s"rebound $base from $mixinClass to $sym in ${sym.owner} ($bcs)")
+
+      // Having a matching symbol is not enough: its info should also be a subtype
+      // of the superaccessor's type, see test/files/run/t11351.scala
+      if ((sym ne acc) && sym.exists && !(sym.isErroneous || (site.memberInfo(sym) <:< site.memberInfo(acc))))
+        reporter.error(base.pos, s"illegal trait super target found for $acc required by $mixinClass;" +
+                                 s"\n found   : ${exitingTyper{sym.defStringSeenAs(site.memberInfo(sym))}} in ${sym.owner};" +
+                                 s"\n expected: ${exitingTyper{acc.defStringSeenAs(site.memberInfo(acc))}} in ${acc.owner}")
+
       sym
     }
+  }
 
 // --------- type transformation -----------------------------------------------
 
@@ -173,9 +193,35 @@ abstract class Mixin extends Transform with ast.TreeDSL with AccessorSynthesis {
       // Optimize: no need if mixinClass has no typeparams.
       // !!! JZ Really? What about the effect of abstract types, prefix?
       if (mixinClass.typeParams.isEmpty) sym
-      else sym modifyInfo (_ => forwarderInfo)
+      else {
+        sym modifyInfo (_ => forwarderInfo)
+        avoidTypeParamShadowing(mixinMember, sym)
+        sym
+      }
     }
     newSym
+  }
+
+  // scala/bug#11523 rename method type parameters that shadow enclosing class type parameters in the host class
+  // of the mixin forwarder
+  private def avoidTypeParamShadowing(mixinMember: Symbol, forwarder: Symbol): Unit = {
+    def isForwarderTparam(sym: Symbol) = {
+      val owner = sym.owner
+      // TODO fix forwarder's info should not refer to tparams of mixinMember, fix cloning in caller!
+      //      try forwarderInfo.cloneInfo(sym)
+      owner == forwarder || owner == mixinMember
+    }
+
+    val symTparams: mutable.Map[Name, Symbol] = mutable.Map.from(forwarder.typeParams.iterator.map(t => (t.name, t)))
+    forwarder.info.foreach {
+      case TypeRef(_, tparam, _) if tparam.isTypeParameter && !isForwarderTparam(tparam) =>
+        symTparams.get(tparam.name).foreach{ symTparam =>
+          debuglog(s"Renaming ${symTparam} (owned by ${symTparam.owner}, a mixin forwarder hosted in ${forwarder.enclClass.fullNameString}) to avoid shadowing enclosing type parameter of ${tparam.owner.fullNameString})")
+          symTparam.name = symTparam.name.append(NameTransformer.NAME_JOIN_STRING)
+          symTparams.remove(tparam.name) // only rename once
+        }
+      case _ =>
+    }
   }
 
   def publicizeTraitMethods(clazz: Symbol): Unit = {
@@ -225,7 +271,7 @@ abstract class Mixin extends Transform with ast.TreeDSL with AccessorSynthesis {
               def genForwarder(required: Boolean): Unit = {
                 val owner = member.owner
                 val isJavaInterface = owner.isJavaDefined && owner.isInterface
-                if (isJavaInterface && !clazz.parentSymbols.contains(owner)) {
+                if (isJavaInterface && !clazz.parentSymbolsIterator.contains(owner)) {
                   if (required) {
                     val text = s"Unable to implement a mixin forwarder for $member in $clazz unless interface ${owner.name} is directly extended by $clazz."
                     reporter.error(clazz.pos, text)
@@ -302,7 +348,7 @@ abstract class Mixin extends Transform with ast.TreeDSL with AccessorSynthesis {
                 mixinMember.alias, mixinClass))
             case alias1 =>
               if (alias1.owner.isJavaDefined && alias1.owner.isInterface) {
-                if (!clazz.parentSymbols.contains(alias1.owner)) {
+                if (!clazz.parentSymbolsIterator.contains(alias1.owner)) {
                   val suggestedParent = exitingTyper(clazz.info.baseType(alias1.owner))
                   reporter.error(clazz.pos, s"Unable to implement a super accessor required by trait ${mixinClass.name} unless $suggestedParent is directly extended by $clazz.")
                 } else
@@ -532,6 +578,7 @@ abstract class Mixin extends Transform with ast.TreeDSL with AccessorSynthesis {
          */
         def completeSuperAccessor(stat: Tree) = stat match {
           case DefDef(_, _, _, vparams :: Nil, _, EmptyTree) if stat.symbol.isSuperAccessor =>
+            debuglog(s"implementing super accessor in $clazz for ${stat.symbol} --> ${stat.symbol.alias.owner} . ${stat.symbol.alias}")
             val body = atPos(stat.pos)(Apply(SuperSelect(clazz, stat.symbol.alias), vparams map (v => Ident(v.symbol))))
             val pt   = stat.symbol.tpe.resultType
 

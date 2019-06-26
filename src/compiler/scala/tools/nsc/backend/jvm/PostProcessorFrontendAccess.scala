@@ -65,10 +65,9 @@ object PostProcessorFrontendAccess {
 
     def optAddToBytecodeRepository: Boolean
     def optBuildCallGraph: Boolean
+    def optUseAnalyzerCache: Boolean
 
     def optNone: Boolean
-    def optLClasspath: Boolean
-    def optLProject: Boolean
 
     def optUnreachableCode: Boolean
     def optNullnessTracking: Boolean
@@ -78,6 +77,9 @@ object PostProcessorFrontendAccess {
     def optSimplifyJumps: Boolean
     def optCompactLocals: Boolean
     def optClosureInvocations: Boolean
+    def optAllowSkipCoreModuleInit: Boolean
+    def optAssumeModulesNonNull: Boolean
+    def optAllowSkipClassLoading: Boolean
 
     def optInlinerEnabled: Boolean
     def optInlineFrom: List[String]
@@ -185,10 +187,9 @@ object PostProcessorFrontendAccess {
 
       val optAddToBytecodeRepository: Boolean = s.optAddToBytecodeRepository
       val optBuildCallGraph: Boolean = s.optBuildCallGraph
+      val optUseAnalyzerCache: Boolean = s.optUseAnalyzerCache
 
       val optNone: Boolean = s.optNone
-      val optLClasspath: Boolean = s.optLClasspath
-      val optLProject: Boolean = s.optLProject
 
       val optUnreachableCode: Boolean = s.optUnreachableCode
       val optNullnessTracking: Boolean = s.optNullnessTracking
@@ -198,6 +199,9 @@ object PostProcessorFrontendAccess {
       val optSimplifyJumps: Boolean = s.optSimplifyJumps
       val optCompactLocals: Boolean = s.optCompactLocals
       val optClosureInvocations: Boolean = s.optClosureInvocations
+      val optAllowSkipCoreModuleInit: Boolean = s.optAllowSkipCoreModuleInit
+      val optAssumeModulesNonNull: Boolean = s.optAssumeModulesNonNull
+      val optAllowSkipClassLoading: Boolean = s.optAllowSkipClassLoading
 
       val optInlinerEnabled: Boolean = s.optInlinerEnabled
       val optInlineFrom: List[String] = s.optInlineFrom.value

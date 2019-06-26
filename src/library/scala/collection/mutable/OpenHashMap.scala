@@ -15,11 +15,11 @@ package mutable
 
 import java.util.ConcurrentModificationException
 
+import scala.collection.generic.DefaultSerializable
+
 /**
   *  @define Coll `OpenHashMap`
   *  @define coll open hash map
-  *
-  *  @since 2.7
   */
 @deprecated("Use HashMap or one of the specialized versions (LongMap, AnyRefMap) instead of OpenHashMap", "2.13.0")
 @SerialVersionUID(3L)
@@ -53,9 +53,6 @@ object OpenHashMap extends MapFactory[OpenHashMap] {
   *  @tparam Value        type of the values in this map.
   *  @param initialSize   the initial size of the internal hash table.
   *
-  *  @author David MacIver
-  *  @since  2.7
-  *
   *  @define Coll `OpenHashMap`
   *  @define coll open hash map
   *  @define mayNotTerminateInf
@@ -65,7 +62,9 @@ object OpenHashMap extends MapFactory[OpenHashMap] {
 class OpenHashMap[Key, Value](initialSize : Int)
   extends AbstractMap[Key, Value]
     with MapOps[Key, Value, OpenHashMap, OpenHashMap[Key, Value]]
-    with StrictOptimizedIterableOps[(Key, Value), Iterable, OpenHashMap[Key, Value]] {
+    with StrictOptimizedIterableOps[(Key, Value), Iterable, OpenHashMap[Key, Value]]
+    with MapFactoryDefaults[Key, Value, OpenHashMap, Iterable]
+    with DefaultSerializable {
 
   import OpenHashMap.OpenEntry
   private type Entry = OpenEntry[Key, Value]
@@ -277,6 +276,13 @@ class OpenHashMap[Key, Value](initialSize : Int)
     foreachUndeletedEntry(entry => {
       if (modCount != startModCount) throw new ConcurrentModificationException
       f((entry.key, entry.value.get))}
+    )
+  }
+  override def foreachEntry[U](f : (Key, Value) => U): Unit = {
+    val startModCount = modCount
+    foreachUndeletedEntry(entry => {
+      if (modCount != startModCount) throw new ConcurrentModificationException
+      f(entry.key, entry.value.get)}
     )
   }
 

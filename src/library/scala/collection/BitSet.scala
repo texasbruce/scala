@@ -16,6 +16,7 @@ package collection
 import java.io.{ObjectInputStream, ObjectOutputStream}
 
 import scala.annotation.unchecked.uncheckedVariance
+import scala.collection.Stepper.EfficientSplit
 import scala.collection.mutable.Builder
 
 
@@ -32,9 +33,9 @@ import scala.collection.mutable.Builder
   * @define Coll `BitSet`
   */
 trait BitSet extends SortedSet[Int] with BitSetOps[BitSet] {
-  override protected def fromSpecific(coll: IterableOnce[Int]): BitSetC = bitSetFactory.fromSpecific(coll)
-  override protected def newSpecificBuilder: Builder[Int, BitSetC] = bitSetFactory.newBuilder
-  override def empty: BitSetC = bitSetFactory.empty
+  override protected def fromSpecific(coll: IterableOnce[Int]): BitSet = bitSetFactory.fromSpecific(coll)
+  override protected def newSpecificBuilder: Builder[Int, BitSet] = bitSetFactory.newBuilder
+  override def empty: BitSet = bitSetFactory.empty
   override protected[this] def stringPrefix = "BitSet"
   override def unsorted: Set[Int] = this
 }
@@ -84,18 +85,9 @@ trait BitSetOps[+C <: BitSet with BitSetOps[C]]
   extends SortedSetOps[Int, SortedSet, C] { self =>
   import BitSetOps._
 
-  def bitSetFactory: SpecificIterableFactory[Int, BitSetC]
+  def bitSetFactory: SpecificIterableFactory[Int, C]
 
   def unsorted: Set[Int]
-
-  /**
-    * Type alias to `C`. It is used to provide a default implementation of the `fromSpecific`
-    * and `newSpecificBuilder` operations.
-    *
-    * Due to the `@uncheckedVariance` annotation, usage of this type member can be unsound and is
-    * therefore not recommended.
-    */
-  protected type BitSetC = C @uncheckedVariance
 
   final def ordering: Ordering[Int] = Ordering.Int
 
@@ -128,6 +120,17 @@ trait BitSetOps[+C <: BitSet with BitSetOps[C]]
       else Iterator.empty.next()
   }
 
+  override def stepper[S <: Stepper[_]](implicit shape: StepperShape[Int, S]): S with EfficientSplit = {
+    val st = scala.collection.convert.impl.BitSetStepper.from(this)
+    val r =
+      if (shape.shape == StepperShape.IntShape) st
+      else {
+        assert(shape.shape == StepperShape.ReferenceShape, s"unexpected StepperShape: $shape")
+        AnyStepper.ofParIntStepper(st)
+      }
+    r.asInstanceOf[S with EfficientSplit]
+  }
+
   override def size: Int = {
     var s = 0
     var i = nwords
@@ -139,6 +142,42 @@ trait BitSetOps[+C <: BitSet with BitSetOps[C]]
   }
 
   override def isEmpty: Boolean = 0 until nwords forall (i => word(i) == 0)
+
+  @inline private[this] def smallestInt: Int = {
+    val thisnwords = nwords
+    var i = 0
+    while(i < thisnwords) {
+      val currentWord = word(i)
+      if (currentWord != 0L) {
+        return java.lang.Long.numberOfTrailingZeros(currentWord) + (i * WordLength)
+      }
+      i += 1
+    }
+    throw new UnsupportedOperationException("empty.smallestInt")
+  }
+
+  @inline private[this] def largestInt: Int = {
+    var i = nwords - 1
+    while(i >= 0) {
+      val currentWord = word(i)
+      if (currentWord != 0L) {
+        return ((i + 1) * WordLength) - java.lang.Long.numberOfLeadingZeros(currentWord) - 1
+      }
+      i -= 1
+    }
+    throw new UnsupportedOperationException("empty.largestInt")
+  }
+
+  override def max[B >: Int](implicit ord: Ordering[B]): Int =
+    if (Ordering.Int eq ord) largestInt
+    else if (Ordering.Int isReverseOf ord) smallestInt
+    else super.max(ord)
+
+
+  override def min[B >: Int](implicit ord: Ordering[B]): Int =
+    if (Ordering.Int eq ord) smallestInt
+    else if (Ordering.Int isReverseOf ord) largestInt
+    else super.min(ord)
 
   override def foreach[U](f: Int => U): Unit = {
     /* NOTE: while loops are significantly faster as of 2.11 and
@@ -255,6 +294,11 @@ trait BitSetOps[+C <: BitSet with BitSetOps[C]]
   def flatMap(f: Int => IterableOnce[Int]): C = fromSpecific(new View.FlatMap(toIterable, f))
 
   def collect(pf: PartialFunction[Int, Int]): C = fromSpecific(super[SortedSetOps].collect(pf).toIterable)
+
+  override def partition(p: Int => Boolean): (C, C) = {
+    val left = filter(p)
+    (left, this &~ left)
+  }
 }
 
 object BitSetOps {
@@ -275,4 +319,24 @@ object BitSetOps {
     else assert(w == 0L)
     newelems
   }
+
+  private[collection] def computeWordForFilter(pred: Int => Boolean, isFlipped: Boolean, oldWord: Long, wordIndex: Int): Long =
+    if (oldWord == 0L) 0L else {
+      var w = oldWord
+      val trailingZeroes = java.lang.Long.numberOfTrailingZeros(w)
+      var jmask = 1L << trailingZeroes
+      var j = wordIndex * BitSetOps.WordLength + trailingZeroes
+      val maxJ = (wordIndex + 1) * BitSetOps.WordLength - java.lang.Long.numberOfLeadingZeros(w)
+      while (j != maxJ) {
+        if ((w & jmask) != 0L) {
+          if (pred(j) == isFlipped) {
+            // j did not pass the filter here
+            w = w & ~jmask
+          }
+        }
+        jmask = jmask << 1
+        j += 1
+      }
+      w
+    }
 }

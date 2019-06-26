@@ -5,6 +5,9 @@ import Keys._
 import java.util.{Date, Locale, Properties, TimeZone}
 import java.io.{File, FileInputStream}
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.format.DateTimeFormatter
+import java.time.temporal.{TemporalAccessor, TemporalQueries, TemporalQuery}
 
 import scala.collection.JavaConverters._
 import BuildSettings.autoImport._
@@ -27,13 +30,13 @@ object VersionUtil {
   )
 
   lazy val generatePropertiesFileSettings = Seq[Setting[_]](
-    copyrightString := "Copyright 2002-2018, LAMP/EPFL and Lightbend, Inc.",
+    copyrightString := "Copyright 2002-2019, LAMP/EPFL and Lightbend, Inc.",
     shellBannerString := """
       |     ________ ___   / /  ___
       |    / __/ __// _ | / /  / _ |
       |  __\ \/ /__/ __ |/ /__/ __ |
       | /____/\___/_/ |_/____/_/ | |
-      |                          |/  %s""".stripMargin.linesIterator.drop(1).map(s => s"${ "%n" }${ s }").mkString,
+      |                          |/  %s""".stripMargin.linesIterator.mkString("%n"),
     resourceGenerators in Compile += generateVersionPropertiesFile.map(file => Seq(file)).taskValue,
     generateVersionPropertiesFile := generateVersionPropertiesFileImpl.value
   )
@@ -71,8 +74,21 @@ object VersionUtil {
         val db = new FileRepositoryBuilder().findGitDir.build
         val head = db.resolve("HEAD")
         if (head eq null) {
-          log.info("No git HEAD commit found -- Using current date and 'unknown' SHA")
-          (new Date, "unknown")
+          import scala.sys.process._
+          try {
+            // Workaround lack of git worktree support in JGit https://bugs.eclipse.org/bugs/show_bug.cgi?id=477475
+            val sha = List("git", "rev-parse", "HEAD").!!.trim
+            val commitDateIso = List("git", "log", "-1", "--format=%cI", "HEAD").!!.trim
+            val date = java.util.Date.from(DateTimeFormatter.ISO_DATE_TIME.parse(commitDateIso, new TemporalQuery[Instant] {
+              override def queryFrom(temporal: TemporalAccessor): Instant = Instant.from(temporal)
+            }))
+            (date, sha.substring(0, 7))
+          } catch {
+            case ex: Exception =>
+              ex.printStackTrace()
+              log.info("No git HEAD commit found -- Using current date and 'unknown' SHA")
+              (new Date, "unknown")
+          }
         } else {
           val commit = new RevWalk(db).parseCommit(head)
           (new Date(commit.getCommitTime.toLong * 1000L), commit.getName.substring(0, 7))
@@ -176,24 +192,5 @@ object VersionUtil {
     props.asScala.toMap.map {
       case (k, v) => (k, sys.props.getOrElse(k, v)) // allow system properties to override versions.properties
     }
-  }
-
-  private def bootstrapOrganization(path: String) =
-    "org.scala-lang.scala-sha-bootstrap." + path.replace('/', '.')
-
-  /** Build a dependency to a JAR file in the bootstrap repository */
-  def bootstrapDep(path: String)(libNameAndSha: (String, String)): ModuleID =
-    bootstrapOrganization(path) % libNameAndSha._1 % libNameAndSha._2 from
-      s"https://repo.lightbend.com/typesafe/scala-sha-bootstrap/org/scala-lang/bootstrap/${libNameAndSha._2}/$path/${libNameAndSha._1}.jar"
-
-  /** Copy a bootstrap dependency JAR that is on the classpath to a file */
-  def copyBootstrapJar(cp: Seq[Attributed[File]], baseDir: File, path: String, libName: String): Unit = {
-    val org = bootstrapOrganization(path)
-    val resolved = cp.find { a =>
-      val mod = a.get(moduleID.key)
-      mod.map(_.organization) == Some(org) && mod.map(_.name) == Some(libName)
-    }.map(_.data).get
-    if(!(baseDir / path).exists()) IO.createDirectory(baseDir / path)
-    IO.copyFile(resolved, baseDir / path / s"$libName.jar")
   }
 }

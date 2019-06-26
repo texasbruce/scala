@@ -131,6 +131,23 @@ class PromiseTests extends MinimalScalaTest {
     futureWithResult(_(future, result))
   }
 
+  "A Promise should not be serializable" should {
+
+    def verifyNonSerializabilityFor(p: Promise[_]): Unit = {
+      import java.io._
+      val out = new ObjectOutputStream(new ByteArrayOutputStream())
+      intercept[NotSerializableException] {
+        out.writeObject(p)
+      }.getMessage mustBe "Promises and Futures cannot be serialized"
+    }
+
+    verifyNonSerializabilityFor(Promise[Unit]())
+    verifyNonSerializabilityFor(Promise.failed(new NullPointerException))
+    verifyNonSerializabilityFor(Promise.successful("test"))
+    verifyNonSerializabilityFor(Promise.fromTry(Success("test")))
+    verifyNonSerializabilityFor(Promise.fromTry(Failure(new NullPointerException)))
+  }
+
   def futureWithResult(f: ((Future[Any], Any) => Unit) => Unit): Unit = {
 
     "be completed" in { f((future, _) => future.isCompleted mustBe (true)) }
@@ -204,7 +221,7 @@ class PromiseTests extends MinimalScalaTest {
     "cast using mapTo" in {
       f {
         (future, result) =>
-        Await.result(future.mapTo[Boolean].recover({ case _: ClassCastException ⇒ false }), defaultTimeout) mustBe (false)
+        Await.result(future.mapTo[Boolean].recover({ case _: ClassCastException => false }), defaultTimeout) mustBe (false)
       }
     }
 
@@ -271,7 +288,7 @@ class PromiseTests extends MinimalScalaTest {
     "recover from exception" in {
       f {
         (future, message) =>
-        Await.result(future.recover({ case e if e.getMessage == message ⇒ "pigdog" }), defaultTimeout) mustBe ("pigdog")
+        Await.result(future.recover({ case e if e.getMessage == message => "pigdog" }), defaultTimeout) mustBe ("pigdog")
       }
     }
 

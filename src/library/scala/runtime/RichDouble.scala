@@ -38,13 +38,14 @@ final class RichDouble(val self: Double) extends AnyVal with FractionalProxy[Dou
 
   def isNaN: Boolean         = java.lang.Double.isNaN(self)
   def isInfinity: Boolean    = java.lang.Double.isInfinite(self)
+  def isFinite: Boolean      = java.lang.Double.isFinite(self)
   def isPosInfinity: Boolean = Double.PositiveInfinity == self
   def isNegInfinity: Boolean = Double.NegativeInfinity == self
 
   override def abs: Double               = math.abs(self)
   override def max(that: Double): Double = math.max(self, that)
   override def min(that: Double): Double = math.min(self, that)
-  override def signum: Int               = math.signum(self).toInt  // !!! NaN
+  @deprecated("signum does not handle -0.0 or Double.NaN; use `sign` method instead", since = "2.13.0") override def signum: Int = num.signum(self)
 
   def round: Long   = math.round(self)
   def ceil: Double  = math.ceil(self)

@@ -15,6 +15,8 @@ package reflect
 package internal
 package pickling
 
+import scala.annotation.tailrec
+
 /** Variable length byte arrays, with methods for basic pickling and unpickling.
  *
  *  @param data The initial buffer
@@ -74,6 +76,7 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
    *  If number is more than one byte, shift rest of array to make space.
    */
   def patchNat(pos: Int, x: Int): Unit = {
+    @tailrec
     def patchNatPrefix(x: Int): Unit = {
       writeByte(0)
       Array.copy(bytes, pos, bytes, pos+1, writeIndex - (pos+1))
@@ -163,7 +166,7 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
   /** Perform operation `op` the number of
    *  times specified.  Concatenate the results into a list.
    */
-  def times[T](n: Int, op: ()=>T): List[T] =
+  def times[T](n: Int, op: () => T): List[T] =
     if (n == 0) List() else op() :: times(n-1, op)
 
   /** Pickle = majorVersion_Nat minorVersion_Nat nbEntries_Nat {Entry}

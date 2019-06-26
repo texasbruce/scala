@@ -35,9 +35,6 @@ import scala.collection.mutable.ListBuffer
  *  before the main method has been executed.'''''
  *
  *  Future versions of this trait will no longer extend `DelayedInit`.
- *
- *  @author  Martin Odersky
- *  @since   2.1
  */
 trait App extends DelayedInit {
 

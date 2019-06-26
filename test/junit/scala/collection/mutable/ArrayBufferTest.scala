@@ -6,8 +6,8 @@ import org.junit.Test
 import org.junit.Assert.assertEquals
 
 
-import scala.tools.testing.AssertUtil
-import scala.tools.testing.AssertUtil.assertThrows
+import scala.tools.testkit.AssertUtil
+import scala.tools.testkit.AssertUtil.assertThrows
 
 /* Test for scala/bug#9043 */
 @RunWith(classOf[JUnit4])
@@ -352,5 +352,23 @@ class ArrayBufferTest {
     }
   }
 
+  @Test def t11417_sortInPlace: Unit = {
+    val a = ArrayBuffer(5,4,3,2,1)
+    a.trimEnd(2)
+    a.sortInPlace
+    assertEquals(List(3,4,5), a)
+  }
 
+  @Test def trimToSize: Unit = {
+    val b = ArrayBuffer(1,2,3)
+    assertEquals(16, b.array.length)
+    b ++= (1 to 1000)
+    assertEquals(1024, b.array.length)
+    b.remove(200, 803)
+    b.trimToSize()
+    assertEquals(256, b.array.length)
+  }
+
+  @Test def t11482_allowNegativeInitialSize: Unit =
+    new ArrayBuffer(-1)
 }

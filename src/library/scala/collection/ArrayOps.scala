@@ -16,11 +16,6 @@ package collection
 import java.lang.Math.{max, min}
 import java.util.Arrays
 
-import mutable.ArrayBuilder
-import immutable.Range
-import scala.reflect.ClassTag
-import scala.math.Ordering
-import scala.util.Sorting
 import scala.Predef.{ // unimport all array-related implicit conversions to avoid triggering them accidentally
   genericArrayOps => _,
   booleanArrayOps => _,
@@ -48,6 +43,12 @@ import scala.Predef.{ // unimport all array-related implicit conversions to avoi
   copyArrayToImmutableIndexedSeq => _,
   _
 }
+import scala.collection.Stepper.EfficientSplit
+import scala.collection.immutable.Range
+import scala.collection.mutable.ArrayBuilder
+import scala.math.Ordering
+import scala.reflect.ClassTag
+import scala.util.Sorting
 
 object ArrayOps {
 
@@ -55,7 +56,7 @@ object ArrayOps {
   private class ArrayView[A](xs: Array[A]) extends AbstractIndexedSeqView[A] {
     def length = xs.length
     def apply(n: Int) = xs(n)
-    override protected[this] def className = "ArrayView"
+    override def toString: String = immutable.ArraySeq.unsafeWrapArray(xs).mkString("ArrayView(", ", ", ")")
   }
 
   /** A lazy filtered array. No filtering is applied until one of `foreach`, `map` or `flatMap` is called. */
@@ -118,7 +119,7 @@ object ArrayOps {
     def withFilter(q: A => Boolean): WithFilter[A] = new WithFilter[A](a => p(a) && q(a), xs)
   }
 
-  private final class ArrayIterator[@specialized(AnyRef, Int, Double, Long, Float, Char, Byte, Short, Boolean, Unit) A](xs: Array[A]) extends AbstractIterator[A] {
+  private final class ArrayIterator[@specialized(Specializable.Everything) A](xs: Array[A]) extends AbstractIterator[A] {
     private[this] var pos = 0
     private[this] val len = xs.length
     def hasNext: Boolean = pos < len
@@ -133,7 +134,7 @@ object ArrayOps {
     }
   }
 
-  private final class ReverseIterator[@specialized(AnyRef, Int, Double, Long, Float, Char, Byte, Short, Boolean, Unit) A](xs: Array[A]) extends AbstractIterator[A] {
+  private final class ReverseIterator[@specialized(Specializable.Everything) A](xs: Array[A]) extends AbstractIterator[A] {
     private[this] var pos = xs.length-1
     def hasNext: Boolean = pos >= 0
     def next(): A = try {
@@ -177,15 +178,13 @@ object ArrayOps {
   *  `immutable.ArraySeq` serve this purpose.
   *
   *  The difference between this class and `ArraySeq`s is that calling transformer methods such as
- *   `filter` and `map` will yield an array, whereas an `ArraySeq` will remain an `ArraySeq`.
-  *
-  *  @since 2.8
+  *  `filter` and `map` will yield an array, whereas an `ArraySeq` will remain an `ArraySeq`.
   *
   *  @tparam A   type of the elements contained in this array.
   */
-final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
+final class ArrayOps[A](private val xs: Array[A]) extends AnyVal {
 
-  private[this] implicit def elemTag: ClassTag[A] = ClassTag(xs.getClass.getComponentType)
+  @`inline` private[this] implicit def elemTag: ClassTag[A] = ClassTag(xs.getClass.getComponentType)
 
   /** The size of this array.
     *
@@ -239,6 +238,18 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     */
   def lastOption: Option[A] = if(isEmpty) None else Some(last)
 
+  /** Compares the size of this array to a test value.
+    *
+    *   @param   otherSize the test value that gets compared with the size.
+    *   @return  A value `x` where
+    *   {{{
+    *        x <  0       if this.size <  otherSize
+    *        x == 0       if this.size == otherSize
+    *        x >  0       if this.size >  otherSize
+    *   }}}
+    */
+  def sizeCompare(otherSize: Int): Int = Integer.compare(xs.length, otherSize)
+
   /** Compares the length of this array to a test value.
     *
     *   @param   len   the test value that gets compared with the length.
@@ -250,6 +261,40 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *   }}}
     */
   def lengthCompare(len: Int): Int = Integer.compare(xs.length, len)
+
+  /** Method mirroring [[SeqOps.sizeIs]] for consistency, except it returns an `Int`
+    * because `size` is known and comparison is constant-time.
+    *
+    * These operations are equivalent to [[sizeCompare(Int) `sizeCompare(Int)`]], and
+    * allow the following more readable usages:
+    *
+    * {{{
+    * this.sizeIs < size     // this.sizeCompare(size) < 0
+    * this.sizeIs <= size    // this.sizeCompare(size) <= 0
+    * this.sizeIs == size    // this.sizeCompare(size) == 0
+    * this.sizeIs != size    // this.sizeCompare(size) != 0
+    * this.sizeIs >= size    // this.sizeCompare(size) >= 0
+    * this.sizeIs > size     // this.sizeCompare(size) > 0
+    * }}}
+    */
+  def sizeIs: Int = xs.length
+
+  /** Method mirroring [[SeqOps.lengthIs]] for consistency, except it returns an `Int`
+    * because `length` is known and comparison is constant-time.
+    *
+    * These operations are equivalent to [[lengthCompare(Int) `lengthCompare(Int)`]], and
+    * allow the following more readable usages:
+    *
+    * {{{
+    * this.lengthIs < len     // this.lengthCompare(len) < 0
+    * this.lengthIs <= len    // this.lengthCompare(len) <= 0
+    * this.lengthIs == len    // this.lengthCompare(len) == 0
+    * this.lengthIs != len    // this.lengthCompare(len) != 0
+    * this.lengthIs >= len    // this.lengthCompare(len) >= 0
+    * this.lengthIs > len     // this.lengthCompare(len) > 0
+    * }}}
+    */
+  def lengthIs: Int = xs.length
 
   /** Selects an interval of elements. The returned array is made up
     * of all elements `x` which satisfy the invariant:
@@ -361,6 +406,24 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       case null               => throw new NullPointerException
     }).asInstanceOf[Iterator[A]]
 
+  def stepper[S <: Stepper[_]](implicit shape: StepperShape[A, S]): S with EfficientSplit = {
+    import convert.impl._
+    val s = shape.shape match {
+      case StepperShape.ReferenceShape => (xs: Any) match {
+        case bs: Array[Boolean] => new BoxedBooleanArrayStepper(bs, 0, xs.length)
+        case _ => new ObjectArrayStepper[AnyRef](xs.asInstanceOf[Array[AnyRef ]], 0, xs.length)
+      }
+      case StepperShape.IntShape    => new IntArrayStepper           (xs.asInstanceOf[Array[Int    ]], 0, xs.length)
+      case StepperShape.LongShape   => new LongArrayStepper          (xs.asInstanceOf[Array[Long   ]], 0, xs.length)
+      case StepperShape.DoubleShape => new DoubleArrayStepper        (xs.asInstanceOf[Array[Double ]], 0, xs.length)
+      case StepperShape.ByteShape   => new WidenedByteArrayStepper   (xs.asInstanceOf[Array[Byte   ]], 0, xs.length)
+      case StepperShape.ShortShape  => new WidenedShortArrayStepper  (xs.asInstanceOf[Array[Short  ]], 0, xs.length)
+      case StepperShape.CharShape   => new WidenedCharArrayStepper   (xs.asInstanceOf[Array[Char   ]], 0, xs.length)
+      case StepperShape.FloatShape  => new WidenedFloatArrayStepper  (xs.asInstanceOf[Array[Float  ]], 0, xs.length)
+    }
+    s.asInstanceOf[S with EfficientSplit]
+  }
+
   /** Partitions elements in fixed size arrays.
     *  @see [[scala.collection.Iterator]], method `grouped`
     *
@@ -407,8 +470,42 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     (res1.result(), res2.result())
   }
 
+  /** Applies a function `f` to each element of the array and returns a pair of arrays: the first one
+    *  made of those values returned by `f` that were wrapped in [[scala.util.Left]], and the second
+    *  one made of those wrapped in [[scala.util.Right]].
+    *
+    *  Example:
+    *  {{{
+    *    val xs = Array(1, "one", 2, "two", 3, "three") partitionMap {
+    *     case i: Int => Left(i)
+    *     case s: String => Right(s)
+    *    }
+    *    // xs == (Array(1, 2, 3),
+    *    //        Array(one, two, three))
+    *  }}}
+    *
+    *  @tparam A1  the element type of the first resulting collection
+    *  @tparam A2  the element type of the second resulting collection
+    *  @param f    the 'split function' mapping the elements of this array to an [[scala.util.Either]]
+    *
+    *  @return     a pair of arrays: the first one made of those values returned by `f` that were wrapped in [[scala.util.Left]], 
+    *              and the second one made of those wrapped in [[scala.util.Right]]. */
+  def partitionMap[A1: ClassTag, A2: ClassTag](f: A => Either[A1, A2]): (Array[A1], Array[A2]) = {
+    val res1 = ArrayBuilder.make[A1]
+    val res2 = ArrayBuilder.make[A2]
+    var i = 0
+    while(i < xs.length) {
+      f(xs(i)) match {
+        case Left(x) => res1 += x
+        case Right(x) => res2 += x
+      }
+      i += 1
+    }
+    (res1.result(), res2.result())
+  }
+
   /** Returns a new array with the elements in reversed order. */
-  def reverse: Array[A] = {
+  @inline def reverse: Array[A] = {
     val len = xs.length
     val res = new Array[A](len)
     var i = 0
@@ -478,13 +575,12 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     val len = xs.length
     def boxed = if(len < ArrayOps.MaxStableSortLength) {
       val a = xs.clone()
-      Sorting.stableSort(xs)(ord.asInstanceOf[Ordering[A]])
+      Sorting.stableSort(a)(ord.asInstanceOf[Ordering[A]])
       a
     } else {
       val a = Array.copyAs[AnyRef](xs, len)(ClassTag.AnyRef)
       Arrays.sort(a, ord.asInstanceOf[Ordering[AnyRef]])
       Array.copyAs[A](a, len)
-      a
     }
     if(len <= 1) xs.clone()
     else ((xs: Array[_]) match {
@@ -666,7 +762,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *           Returns `z` if this array is empty.
     */
   def foldLeft[B](z: B)(op: (B, A) => B): B = {
-    def f[@specialized(AnyRef, Int, Double, Long, Float, Char, Byte, Short, Boolean, Unit) T](xs: Array[T], op: (Any, Any) => Any, z: Any): Any = {
+    def f[@specialized(Specializable.Everything) T](xs: Array[T], op: (Any, Any) => Any, z: Any): Any = {
       val length = xs.length
       var v: Any = z
       var i = 0
@@ -677,6 +773,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       v
     }
     ((xs: Any) match {
+      case null => throw new NullPointerException // null-check first helps static analysis of instanceOf
       case xs: Array[AnyRef]  => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Int]     => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Double]  => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
@@ -687,7 +784,6 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       case xs: Array[Short]   => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Boolean] => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Unit]    => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case null => throw new NullPointerException
     }).asInstanceOf[B]
   }
 
@@ -702,7 +798,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  Example:
     *  {{{
     *    Array(1, 2, 3, 4).scanLeft(0)(_ + _) == Array(0, 1, 3, 6, 10)
-    *  }}}    
+    *  }}}
     *
     */
   def scanLeft[ B : ClassTag ](z: B)(op: (B, A) => B): Array[B] = {
@@ -715,7 +811,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       i += 1
     }
     res(i) = v
-    res 
+    res
   }
 
   /** Computes a prefix scan of the elements of the array.
@@ -741,7 +837,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  Example:
     *  {{{
     *    Array(4, 3, 2, 1).scanRight(0)(_ + _) == Array(10, 6, 3, 1, 0)
-    *  }}}    
+    *  }}}
     *
     */
   def scanRight[ B : ClassTag ](z: B)(op: (A, B) => B): Array[B] = {
@@ -754,7 +850,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       res(i) = v
       i -= 1
     }
-    res 
+    res
   }
 
   /** Applies a binary operator to all elements of this array and a start value,
@@ -772,7 +868,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *           Returns `z` if this array is empty.
     */
   def foldRight[B](z: B)(op: (A, B) => B): B = {
-    def f[@specialized(AnyRef, Int, Double, Long, Float, Char, Byte, Short, Boolean, Unit) T](xs: Array[T], op: (Any, Any) => Any, z: Any): Any = {
+    def f[@specialized(Specializable.Everything) T](xs: Array[T], op: (Any, Any) => Any, z: Any): Any = {
       var v = z
       var i = xs.length - 1
       while(i >= 0) {
@@ -782,6 +878,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       v
     }
     ((xs: Any) match {
+      case null => throw new NullPointerException
       case xs: Array[AnyRef]  => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Int]     => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Double]  => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
@@ -792,7 +889,6 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
       case xs: Array[Short]   => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Boolean] => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
       case xs: Array[Unit]    => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case null => throw new NullPointerException
     }).asInstanceOf[B]
 
   }
@@ -806,36 +902,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  @param op      a binary operator that must be associative.
     *  @return        the result of applying the fold operator `op` between all the elements, or `z` if this array is empty.
     */
-  def fold[A1 >: A](z: A1)(op: (A1, A1) => A1): A1 = {
-    def f[@specialized(AnyRef, Int, Double, Long, Float, Char, Byte, Short, Boolean, Unit) T](xs: Array[T], op: (Any, Any) => Any, z: Any): Any = {
-      // Start with the last element and run the loop from 0 until length-1. It would be more logical to start with
-      // the first element and loop from 1 until length but hotspot performs special optimizations for loops starting
-      // at 0 which have a huge impact when the actual folding operation is fast.
-      val length = xs.length-1
-      if(length >= 0) {
-        var v: Any = xs(length)
-        var i = 0
-        while(i < length) {
-          v = op(v, xs(i))
-          i += 1
-        }
-        v
-      } else z
-    }
-    ((xs: Any) match {
-      case xs: Array[AnyRef]  => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Int]     => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Double]  => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Long]    => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Float]   => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Char]    => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Byte]    => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Short]   => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Boolean] => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case xs: Array[Unit]    => f(xs, op.asInstanceOf[(Any, Any) => Any], z)
-      case null => throw new NullPointerException
-    }).asInstanceOf[A1]
-  }
+  def fold[A1 >: A](z: A1)(op: (A1, A1) => A1): A1 = foldLeft(z)(op)
 
   /** Builds a new array by applying a function to all elements of this array.
     *
@@ -844,14 +911,24 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  @return       a new aray resulting from applying the given function
     *                `f` to each element of this array and collecting the results.
     */
-  def map[B : ClassTag](f: A => B): Array[B] = {
-    val res = new Array[B](xs.length)
-    var i = 0
-    while (i < xs.length) {
-      res(i) = f(xs(i))
-      i = i + 1
+  def map[B](f: A => B)(implicit ct: ClassTag[B]): Array[B] = {
+    val len = xs.length
+    val ys = new Array[B](len)
+    if(len > 0) {
+      var i = 0
+      (xs: Any) match {
+        case xs: Array[AnyRef]  => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Int]     => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Double]  => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Long]    => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Float]   => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Char]    => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Byte]    => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Short]   => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+        case xs: Array[Boolean] => while (i < len) { ys(i) = f(xs(i).asInstanceOf[A]); i = i+1 }
+      }
     }
-    res
+    ys
   }
 
   def mapInPlace(f: A => A): Array[A] = {
@@ -871,7 +948,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  @return       a new array resulting from applying the given collection-valued function
     *                `f` to each element of this array and concatenating the results.
     */
-  def flatMap[B: ClassTag](f: A => IterableOnce[B]): Array[B] = {
+  def flatMap[B : ClassTag](f: A => IterableOnce[B]): Array[B] = {
     val b = ArrayBuilder.make[B]
     var i = 0
     while(i < xs.length) {
@@ -891,15 +968,27 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  @param asIterable A function that converts elements of this array to rows - Iterables of type `B`.
     *  @return           An array obtained by concatenating rows of this array.
     */
-  def flatten[B](implicit asIterable: A => scala.collection.Iterable[B], m: ClassTag[B]): Array[B] = {
+  def flatten[B](implicit asIterable: A => IterableOnce[B], m: ClassTag[B]): Array[B] = {
     val b = ArrayBuilder.make[B]
-    val sizes = map {
-      case is: IndexedSeq[_] => is.size
-      case _ => 0
+    val len = xs.length
+    var size = 0
+    var i = 0
+    while(i < len) {
+      xs(i) match {
+        case it: IterableOnce[_] =>
+          val k = it.knownSize
+          if(k > 0) size += k
+        case a: Array[_] => size += a.length
+        case _ =>
+      }
+      i += 1
     }
-    b.sizeHint(new ArrayOps(sizes).fold(0)(_ + _))
-    for (xs <- this)
-      b ++= asIterable(xs)
+    if(size > 0) b.sizeHint(size)
+    i = 0
+    while(i < len) {
+      b ++= asIterable(xs(i))
+      i += 1
+    }
     b.result()
   }
 
@@ -929,7 +1018,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     b.result()
   }
 
-  /** Finds the first element of the $coll for which the given partial function is defined, and applies the
+  /** Finds the first element of the array for which the given partial function is defined, and applies the
     * partial function to it. */
   def collectFirst[B](f: PartialFunction[A, B]): Option[B] = {
     var i = 0
@@ -995,7 +1084,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *
     *  @param that     the iterable providing the second half of each result pair
     *  @param thisElem the element to be used to fill up the result if this array is shorter than `that`.
-    *  @param thatElem the element to be used to fill up the result if `that` is shorter than this $coll.
+    *  @param thatElem the element to be used to fill up the result if `that` is shorter than this array.
     *  @return        a new array containing pairs consisting of corresponding elements of this array and `that`.
     *                 The length of the returned array is the maximum of the lengths of this array and `that`.
     *                 If this array is shorter than `that`, `thisElem` values are used to pad the result.
@@ -1226,9 +1315,16 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
   def foreach[U](f: A => U): Unit = {
     val len = xs.length
     var i = 0
-    while(i < len) {
-      f(xs(i))
-      i += 1
+    (xs: Any) match {
+      case xs: Array[AnyRef]  => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Int]     => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Double]  => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Long]    => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Float]   => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Char]    => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Byte]    => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Short]   => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
+      case xs: Array[Boolean] => while (i < len) { f(xs(i).asInstanceOf[A]); i = i+1 }
     }
   }
 
@@ -1337,19 +1433,40 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     immutable.ArraySeq.unsafeWrapArray(Array.copyOf(xs, xs.length))
 
   /** Copy elements of this array to another array.
-    *  Fills the given array `dest` starting at index `start` with at most `len` values.
-    *  Copying will stop once either the all elements of this array have been copied,
+    *  Fills the given array `xs` starting at index 0.
+    *  Copying will stop once either all the elements of this array have been copied,
+    *  or the end of the array is reached.
+    *
+    *  @param  xs   the array to fill.
+    *  @tparam B      the type of the elements of the array.
+    */
+  def copyToArray[B >: A](xs: Array[B]): Int = copyToArray(xs, 0)
+
+  /** Copy elements of this array to another array.
+    *  Fills the given array `xs` starting at index `start`.
+    *  Copying will stop once either all the elements of this array have been copied,
+    *  or the end of the array is reached.
+    *
+    *  @param  xs   the array to fill.
+    *  @param  start  the starting index within the destination array.
+    *  @tparam B      the type of the elements of the array.
+    */
+  def copyToArray[B >: A](xs: Array[B], start: Int): Int = copyToArray(xs, start, Int.MaxValue)
+
+  /** Copy elements of this array to another array.
+    *  Fills the given array `xs` starting at index `start` with at most `len` values.
+    *  Copying will stop once either all the elements of this array have been copied,
     *  or the end of the array is reached, or `len` elements have been copied.
     *
-    *  @param  dest   the array to fill.
-    *  @param  start  the starting index.
+    *  @param  xs   the array to fill.
+    *  @param  start  the starting index within the destination array.
     *  @param  len    the maximal number of elements to copy.
     *  @tparam B      the type of the elements of the array.
     */
-  def copyToArray[B >: A](dest: Array[B], start: Int, len: Int = Int.MaxValue): Int = {
-    val copied = IterableOnce.elemsToCopyToArray(xs.length, dest.length, start, len)
+  def copyToArray[B >: A](xs: Array[B], start: Int, len: Int): Int = {
+    val copied = IterableOnce.elemsToCopyToArray(this.xs.length, xs.length, start, len)
     if (copied > 0) {
-      Array.copy(xs, 0, dest, start, copied)
+      Array.copy(this.xs, 0, xs, start, copied)
     }
     copied
   }
@@ -1423,7 +1540,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *  @throws IndexOutOfBoundsException if `index` does not satisfy `0 <= index < length`.
     */
   def updated[B >: A : ClassTag](index: Int, elem: B): Array[B] = {
-    if(index < 0 || index >= xs.length) throw new IndexOutOfBoundsException
+    if(index < 0 || index >= xs.length) throw new IndexOutOfBoundsException(s"$index is out of bounds (min 0, max ${xs.length-1})")
     val dest = toArray[B]
     dest(index) = elem
     dest
@@ -1448,7 +1565,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *                ''n'' times in `that`, then the first ''n'' occurrences of `x` will not form
     *                part of the result, but any following occurrences will.
     */
-  def diff(that: Seq[_ >: A]): Array[A] = mutable.ArraySeq.make(xs).diff(that).array.asInstanceOf[Array[A]]
+  def diff[B >: A](that: Seq[B]): Array[A] = mutable.ArraySeq.make(xs).diff(that).array.asInstanceOf[Array[A]]
 
   /** Computes the multiset intersection between this array and another sequence.
     *
@@ -1459,7 +1576,7 @@ final class ArrayOps[A](val xs: Array[A]) extends AnyVal {
     *                ''n'' times in `that`, then the first ''n'' occurrences of `x` will be retained
     *                in the result, but any following occurrences will be omitted.
     */
-  def intersect(that: Seq[_ >: A]): Array[A] = mutable.ArraySeq.make(xs).intersect(that).array.asInstanceOf[Array[A]]
+  def intersect[B >: A](that: Seq[B]): Array[A] = mutable.ArraySeq.make(xs).intersect(that).array.asInstanceOf[Array[A]]
 
   /** Groups elements in fixed size blocks by passing a "sliding window"
     *  over them (as opposed to partitioning them, as is done in grouped.)

@@ -18,6 +18,7 @@ import java.io.{ObjectInputStream, ObjectOutputStream}
 
 import mutable.{Builder, ImmutableBuilder}
 import scala.annotation.tailrec
+import scala.collection.generic.DefaultSerializable
 
 /**
   * This class implements immutable sets using a list-based data structure. List set iterators and
@@ -33,8 +34,6 @@ import scala.annotation.tailrec
   *
   * @tparam A the type of the elements contained in this list set
   *
-  * @author Matthias Zenger
-  * @since 1
   * @define Coll ListSet
   * @define coll list set
   * @define mayNotTerminateInf
@@ -42,8 +41,9 @@ import scala.annotation.tailrec
   */
 sealed class ListSet[A]
   extends AbstractSet[A]
-    with SetOps[A, ListSet, ListSet[A]]
-    with StrictOptimizedIterableOps[A, ListSet, ListSet[A]] {
+    with StrictOptimizedSetOps[A, ListSet, ListSet[A]]
+    with IterableFactoryDefaults[A, ListSet]
+    with DefaultSerializable {
 
   override protected[this] def className: String = "ListSet"
 
@@ -113,7 +113,6 @@ sealed class ListSet[A]
   * n elements will take O(n^2^) time. This makes the builder suitable only for a small number of
   * elements.
   *
-  * @since 1
   * @define Coll ListSet
   * @define coll list set
   */

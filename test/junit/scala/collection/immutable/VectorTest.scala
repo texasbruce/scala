@@ -5,6 +5,9 @@ import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 import org.junit.Test
 
+import scala.collection.mutable.ListBuffer
+import scala.reflect.{ClassTag, classTag}
+
 @RunWith(classOf[JUnit4])
 class VectorTest {
 
@@ -89,10 +92,10 @@ class VectorTest {
       assertEquals(start, it.next())
     }
   }
-  def intercept[T <: Throwable: Manifest](fn: => Any): T = {
+  def intercept[T <: Throwable: ClassTag](fn: => Any): T = {
     try {
       fn
-      fail(s"expected a ${manifest[T].runtimeClass.getName} to be thrown")
+      fail(s"expected a ${classTag[T].runtimeClass.getName} to be thrown")
       ???
     } catch {
       case x: T => x
@@ -161,4 +164,59 @@ class VectorTest {
     assertEquals(-1, test.indexOf(1000))
   }
 
+  @Test
+  def tapEach(): Unit = {
+    val lb = ListBuffer[Int]()
+
+    val v =
+      Vector(1,2,3)
+      .tapEach(lb += _)
+      .tapEach(lb += _)
+
+    assertEquals(ListBuffer(1,2,3,1,2,3), lb)
+    assertEquals(Vector(1,2,3), v)
+
+
+    val f: Any => Unit = println
+
+    // test that type info is not lost
+    val x: Vector[Char] = Vector[Char]().tapEach(f)
+  }
+
+  @Test
+  def vectorIteratorTake(): Unit = {
+    val v = Vector.from(0 to 50)
+    for {
+      i <- -100 to 4000 by 40
+      j <- -100 to 4000 by 6
+    } {
+      val v2 = v.take(i)
+      assertArrayEquals(s"<${v2.length}>.take($j)", v2.toArray.take(j), v2.iterator.take(j).toArray)
+    }
+  }
+
+  @Test
+  def vectorIteratorDrop2(): Unit = {
+    val v = Vector.from(0 to 50)
+    for {
+      i <- -100 to 4000 by 40
+      j <- -100 to 4000 by 60
+    } {
+      val v2 = v.take(i)
+      assertArrayEquals(s"<${v2.length}>.drop($j)", v2.toArray.drop(j), v2.iterator.drop(j).toArray)
+    }
+  }
+
+  @Test
+  def vectorIteratorSlice(): Unit = {
+    val v = Vector.from(0 to 50)
+    for {
+      i <- -100 to 4000 by 40
+      j <- -100 to 4000 by 60
+      k <- -100 to 4000 by 60
+    } {
+      val v2 = v.take(i)
+      assertArrayEquals(s"<${v2.length}>.slice($j, $k)", v2.toArray.slice(j, k), v2.iterator.slice(j, k).toArray)
+    }
+  }
 }

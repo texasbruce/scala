@@ -1,7 +1,7 @@
 package scala.concurrent
 
 import scala.concurrent.duration._
-import java.util.concurrent.{ TimeUnit, Executor, Executors, ExecutorService, ForkJoinPool, CountDownLatch }
+import java.util.concurrent.{ TimeUnit, Executor, ThreadPoolExecutor, ExecutorService, ForkJoinPool, CountDownLatch, LinkedBlockingQueue }
 import org.openjdk.jmh.infra.Blackhole
 import org.openjdk.jmh.annotations._
 import scala.util.{ Try, Success, Failure }
@@ -12,10 +12,10 @@ import scala.annotation.tailrec
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(value = 1, jvmArgsAppend = Array("-Xmx1G", "-Xms1G", "-ea", "-server", "-XX:+UseCompressedOops", "-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
+@Fork(value = 1, jvmArgsAppend = Array("-Xmx1G", "-Xms1G", "-server", "-XX:+AggressiveOpts", "-XX:+UseCompressedOops", "-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 @Threads(value = 1)
 abstract class AbstractBaseFutureBenchmark {
-  // fjp = ForkJoinPool, fix = FixedThreadPool, fie = FutureInternalExecutor, gbl = GlobalEC
+  // fjp = ForkJoinPool, fix = FixedThreadPool, fie = parasiticEC, gbl = GlobalEC
   @Param(Array[String]("fjp", "fix", "fie", "gbl"))
   final var pool: String = _
 
@@ -33,30 +33,40 @@ abstract class AbstractBaseFutureBenchmark {
 
   @Setup(Level.Trial)
   def startup: Unit = {
-    val e = pool match {
+    executionContext = pool match {
       case "fjp" =>
-        val fjp = new ForkJoinPool(threads)
+        val fjp = new ForkJoinPool(threads) with ExecutionContext with BatchingExecutor {
+          final override def submitForExecution(runnable: Runnable): Unit = super[ForkJoinPool].execute(runnable)
+          final override def execute(runnable: Runnable): Unit =
+            if ((!runnable.isInstanceOf[impl.Promise.Transformation[_,_]] || runnable.asInstanceOf[impl.Promise.Transformation[_,_]].benefitsFromBatching) && runnable.isInstanceOf[Batchable])
+              submitAsyncBatched(runnable)
+            else
+              submitForExecution(runnable)
+          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+        }
         executorService = fjp // we want to close this
         fjp
       case "fix" =>
-        val fix = Executors.newFixedThreadPool(threads)
+        val fix = new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue[Runnable]()) with ExecutionContext with BatchingExecutor {
+          final override def submitForExecution(runnable: Runnable): Unit = super[ThreadPoolExecutor].execute(runnable)
+          final override def execute(runnable: Runnable): Unit =
+            if ((!runnable.isInstanceOf[impl.Promise.Transformation[_,_]] || runnable.asInstanceOf[impl.Promise.Transformation[_,_]].benefitsFromBatching) && runnable.isInstanceOf[Batchable])
+              submitAsyncBatched(runnable)
+            else
+              submitForExecution(runnable)
+          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+        }
         executorService = fix // we want to close this
         fix
       case "gbl" =>
+        // make sure we set the global ec to use the number of threads the bench wants
+        System.setProperty("scala.concurrent.context.minThreads", threads.toString)
+        System.setProperty("scala.concurrent.context.numThreads", threads.toString)
+        System.setProperty("scala.concurrent.context.maxThreads", threads.toString)
         ExecutionContext.global
       case "fie" =>
-        scala.concurrent.Future.InternalCallbackExecutor.asInstanceOf[Executor]
+        scala.concurrent.ExecutionContext.parasitic
     }
-
-    executionContext =
-      if (e.isInstanceOf[ExecutionContext]) e.asInstanceOf[ExecutionContext]
-      else { // TODO: may want to extend this in the implementations directly
-        new ExecutionContext with BatchingExecutor {
-          private[this] final val g = e
-          override final def unbatchedExecute(r: Runnable) = g.execute(r)
-          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-        }
-      }
   }
 
   @TearDown(Level.Trial)
@@ -80,13 +90,8 @@ abstract class OpFutureBenchmark extends AbstractBaseFutureBenchmark {
 
   final val pre_f_p: Promise[Result] = Promise.fromTry(aFailure)
 
-  @inline protected final def await[T](a: Future[T]): Boolean = {
-    var r: Option[Try[T]] = None
-    do {
-      r = a.value
-    } while(r eq None);
-    r.get.isInstanceOf[Success[T]]
-  }
+  @inline protected final def await[T](a: Future[T]): Boolean =
+    (a.value ne None) || (Await.ready(a, timeout) eq a)
 }
 
 class NoopFutureBenchmark extends OpFutureBenchmark {
@@ -259,12 +264,12 @@ class AndThenFutureBenchmark extends OpFutureBenchmark {
 }
 
 class VariousFutureBenchmark extends OpFutureBenchmark {
-  final val mapFun: Result => Result = _.toUpperCase
-  final val flatMapFun: Result => Future[Result] = r => Future.successful(r)
-  final val filterFun: Result => Boolean = _ ne null
-  final val transformFun: Try[Result] => Try[Result] = _ => throw null
-  final val recoverFun: PartialFunction[Throwable, Result] = { case _ => "OK" }
-  final val keepLeft: (Result, Result) => Result = (a,b) => a
+  private[this] final val mapFun: Result => Result = _.toUpperCase
+  private[this] final val flatMapFun: Result => Future[Result] = r => Future.successful(r)
+  private[this] final val filterFun: Result => Boolean = _ ne null
+  private[this] final val transformFun: Try[Result] => Try[Result] = _ => throw null
+  private[this] final val recoverFun: PartialFunction[Throwable, Result] = { case _ => "OK" }
+  private[this] final val keepLeft: (Result, Result) => Result = (a,b) => a
 
   @tailrec private[this] final def next(i: Int, f: Future[Result])(implicit ec: ExecutionContext): Future[Result] =
       if (i > 0) { next(i - 1, f.map(mapFun).flatMap(flatMapFun).filter(filterFun).zipWith(f)(keepLeft).transform(transformFun).recover(recoverFun)) } else { f }
@@ -281,8 +286,8 @@ class VariousFutureBenchmark extends OpFutureBenchmark {
 }
 
 class LoopFutureBenchmark extends OpFutureBenchmark {
-  val depth = 50
-  val size  = 2000
+  private[this] val depth = 50
+  private[this] val size  = 2000
 
   final def pre_loop(i: Int)(implicit ec: ExecutionContext): Future[Int] =
     if (i % depth == 0) Future.successful(i + 1).flatMap(pre_loop)

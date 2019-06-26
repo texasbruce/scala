@@ -51,7 +51,6 @@ import scala.annotation.tailrec
  *  Here the `JsonHelper` extension class implicitly adds the `json` method to
  *  `StringContext` which can be used for `json` string literals.
  *
- *  @since 2.10.0
  *  @param   parts  The parts that make up the interpolated string,
  *                  without the expressions that get inserted by interpolation.
  */
@@ -91,8 +90,45 @@ case class StringContext(parts: String*) {
    *  @note   The Scala compiler may replace a call to this method with an equivalent, but more efficient,
    *          use of a StringBuilder.
    */
-  def s(args: Any*): String = standardInterpolator(processEscapes, args, parts)
-
+  def s(args: Any*): String = macro ??? // fasttracked to scala.tools.reflect.FastStringInterpolator::interpolateS
+  object s {
+    /** The simple string matcher.
+     *
+     *  Attempts to match the input string to the given interpolated patterns via 
+     *  a naive globbing, that is the reverse of the simple interpolator.
+     *
+     *  Here is an example usage:
+     *
+     *  {{{
+     *    val s"Hello, $name" = "Hello, James"
+     *    println(name)  // "James"
+     *  }}}
+     *
+     *  In this example, the string "James" ends up matching the location where the pattern
+     *  `$name` is positioned, and thus ends up bound to that variable.
+     *
+     *  Multiple matches are supported:
+     *
+     *  {{{
+     *    val s"$greeting, $name" = "Hello, James"
+     *    println(greeting)  // "Hello"
+     *    println(name)  // "James"
+     *  }}}
+     *
+     *  And the `s` matcher can match an arbitrary pattern within the `${}` block, for example:
+     *
+     *  {{{
+     *    val TimeSplitter = "([0-9]+)[.:]([0-9]+)".r
+     *    val s"The time is ${TimeSplitter(hours, mins)}" = "The time is 10.50"
+     *    println(hours) // 10
+     *    println(mins) // 50
+     *  }}}
+     *
+     *  Here, we use the `TimeSplitter` regex within the `s` matcher, further splitting the
+     *  matched string "10.50" into its constituent parts
+     */
+    def unapplySeq(s: String) = StringContext.glob(parts, s)
+  }
   /** The raw string interpolator.
    *
    *  It inserts its arguments between corresponding parts of the string context.
@@ -115,7 +151,11 @@ case class StringContext(parts: String*) {
    *  @note   The Scala compiler may replace a call to this method with an equivalent, but more efficient,
    *          use of a StringBuilder.
    */
-  def raw(args: Any*): String = standardInterpolator(identity, args, parts)
+  def raw(args: Any*): String = macro ??? // fasttracked to scala.tools.reflect.FastStringInterpolator::interpolateRaw
+
+  @deprecated("Use the static method StringContext.standardInterpolator instead of the instance method", "2.13.0")
+  def standardInterpolator(process: String => String, args: Seq[Any]): String =
+    StringContext.standardInterpolator(process, args, parts)
 
   /** The formatted string interpolator.
    *
@@ -152,12 +192,129 @@ case class StringContext(parts: String*) {
    *   2. Any `%` characters not in formatting positions must begin one of the conversions
    *      `%%` (the literal percent) or `%n` (the platform-specific line separator).
    */
-  // The implementation is hardwired to `scala.tools.reflect.MacroImplementations.macro_StringInterpolation_f`
-  // Using the mechanism implemented in `scala.tools.reflect.FastTrack`
-  def f[A >: Any](args: A*): String = macro ???
+  def f[A >: Any](args: A*): String = macro ??? // fasttracked to scala.tools.reflect.FormatInterpolator::interpolateF
 }
 
 object StringContext {
+  /**
+    * Linear time glob-matching implementation.
+    * Adapted from https://research.swtch.com/glob
+    *
+    * @param patternChunks The non-wildcard portions of the input pattern,
+    *                      separated by wildcards
+    * @param input The input you wish to match against
+    * @return None if there is no match, Some containing the sequence of matched
+    *         wildcard strings if there is a match 
+    */
+  def glob(patternChunks: Seq[String], input: String): Option[Seq[String]] = {
+    var patternIndex = 0
+    var inputIndex = 0
+    var nextPatternIndex = 0
+    var nextInputIndex = 0
+
+    val numWildcards = patternChunks.length - 1
+    val matchStarts = Array.fill(numWildcards)(-1)
+    val matchEnds = Array.fill(numWildcards)(-1)
+
+    val nameLength = input.length
+    // The final pattern is as long as all the chunks, separated by 1-character
+    // glob-wildcard placeholders
+    val patternLength = {
+      var n = numWildcards
+      for(chunk <- patternChunks) {
+        n += chunk.length
+      }
+      n
+    }
+
+    // Convert the input pattern chunks into a single sequence of shorts; each
+    // non-negative short represents a character, while -1 represents a glob wildcard
+    val pattern = {
+      val arr = new Array[Short](patternLength)
+      var i = 0
+      var first = true
+      for(chunk <- patternChunks) {
+        if (first) first = false
+        else {
+          arr(i) = -1
+          i += 1
+        }
+        for(c <- chunk) {
+          arr(i) = c.toShort
+          i += 1
+        }
+      }
+      arr
+    }
+
+    // Lookup table for each character in the pattern to check whether or not
+    // it refers to a glob wildcard; a non-negative integer indicates which
+    // glob wildcard it represents, while -1 means it doesn't represent any
+    val matchIndices = {
+      val arr = Array.fill(patternLength + 1)(-1)
+      var i = 0
+      var j = 0
+      for(chunk <- patternChunks) {
+        if (j < numWildcards) {
+          i += chunk.length
+          arr(i) = j
+          i += 1
+          j += 1
+        }
+      }
+      arr
+    }
+
+    while(patternIndex < patternLength || inputIndex < nameLength) {
+      matchIndices(patternIndex) match {
+        case -1 => // do nothing
+        case n =>
+          matchStarts(n) = matchStarts(n) match {
+            case -1 => inputIndex
+            case s => math.min(s, inputIndex)
+          }
+          matchEnds(n) = matchEnds(n) match {
+            case -1 => inputIndex
+            case s => math.max(s, inputIndex)
+          }
+      }
+
+      val continue = if (patternIndex < patternLength) {
+        val c = pattern(patternIndex)
+        c match {
+          case -1 =>  // zero-or-more-character wildcard
+            // Try to match at nx. If that doesn't work out, restart at nx+1 next.
+            nextPatternIndex = patternIndex
+            nextInputIndex = inputIndex + 1
+            patternIndex += 1
+            true
+          case _ => // ordinary character
+            if (inputIndex < nameLength && input(inputIndex) == c) {
+              patternIndex += 1
+              inputIndex += 1
+              true
+            } else {
+              false
+            }
+        }
+      } else false
+
+      // Mismatch. Maybe restart.
+      if (!continue) {
+        if (0 < nextInputIndex && nextInputIndex <= nameLength) {
+          patternIndex = nextPatternIndex
+          inputIndex = nextInputIndex
+        } else {
+          return None
+        }
+      }
+    }
+
+    // Matched all of pattern to all of name. Success.
+    Some(collection.immutable.ArraySeq.unsafeWrapArray(
+      Array.tabulate(patternChunks.length - 1)(n => input.slice(matchStarts(n), matchEnds(n)))
+    ))
+  }
 
   /** An exception that is thrown if a string contains a backslash (`\`) character
    *  that does not start a valid escape sequence.
@@ -230,7 +387,7 @@ object StringContext {
     }
   }
 
-  private def standardInterpolator(process: String => String, args: scala.collection.Seq[Any], parts: Seq[String]): String = {
+  def standardInterpolator(process: String => String, args: scala.collection.Seq[Any], parts: Seq[String]): String = {
     StringContext.checkLengths(args, parts)
     val pi = parts.iterator
     val ai = args.iterator

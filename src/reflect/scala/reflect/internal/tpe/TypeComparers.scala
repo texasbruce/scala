@@ -15,7 +15,7 @@ package reflect
 package internal
 package tpe
 
-import scala.collection.{ mutable }
+import scala.collection.mutable
 import util.TriState
 import scala.annotation.tailrec
 import scala.reflect.internal.util.StatisticsStatics
@@ -149,8 +149,9 @@ trait TypeComparers {
     && (tp1.normalize =:= tp2.normalize)
   )
   private def isSameTypeRef(tr1: TypeRef, tr2: TypeRef) = (
-       equalSymsAndPrefixes(tr1.sym, tr1.pre, tr2.sym, tr2.pre)
-    && (isSameHKTypes(tr1, tr2) || isSameTypes(tr1.args, tr2.args))
+    if ((((tr1 eq ObjectTpeJava) && (tr2.sym eq AnyClass)) || (tr2 eq ObjectTpeJava) && (tr1.sym eq AnyClass)))
+      true
+    else equalSymsAndPrefixes(tr1.sym, tr1.pre, tr2.sym, tr2.pre) && (isSameHKTypes(tr1, tr2) || isSameTypes(tr1.args, tr2.args))
   )
 
   private def isSameSingletonType(tp1: SingletonType, tp2: SingletonType): Boolean = {
@@ -187,11 +188,11 @@ trait TypeComparers {
   // scala/bug#2066 This prevents overrides with incompatible variance in higher order type parameters.
   private def methodHigherOrderTypeParamsSameVariance(sym1: Symbol, sym2: Symbol) = {
     def ignoreVariance(sym: Symbol) = !(sym.isHigherOrderTypeParameter && sym.logicallyEnclosingMember.isMethod)
-    !settings.isScala211 || ignoreVariance(sym1) || ignoreVariance(sym2) || sym1.variance == sym2.variance
+    ignoreVariance(sym1) || ignoreVariance(sym2) || sym1.variance == sym2.variance
   }
 
   private def methodHigherOrderTypeParamsSubVariance(low: Symbol, high: Symbol) =
-    !settings.isScala211 || methodHigherOrderTypeParamsSameVariance(low, high) || low.variance.isInvariant
+    methodHigherOrderTypeParamsSameVariance(low, high) || low.variance.isInvariant
 
   def isSameType2(tp1: Type, tp2: Type): Boolean = {
     def retry() = {
@@ -381,36 +382,45 @@ trait TypeComparers {
   // @assume tp1.isHigherKinded || tp2.isHigherKinded
   def isHKSubType(tp1: Type, tp2: Type, depth: Depth): Boolean = {
 
+    def hkSubVariance(tparams1: List[Symbol], tparams2: List[Symbol]) =
+      (tparams1 corresponds tparams2)(methodHigherOrderTypeParamsSubVariance)
+
     def isSubHKTypeVar(tp1: Type, tp2: Type) = (tp1, tp2) match {
-      case (tv1 @ TypeVar(_, _), tv2 @ TypeVar(_, _)) =>
-        reporter.warning(tv1.typeSymbol.pos,
-          sm"""|compiler bug: Unexpected code path: testing two type variables for subtype relation:
-               |  ${tv1} <:< ${tv2}
-               |Please report bug at https://github.com/scala/bug/issues
-            """.trim)
-        false
-      case (tp1, tv2 @ TypeVar(_, _)) =>
+      case (tv1: TypeVar, tv2: TypeVar) =>
+        devWarning(sm"Unexpected code path: testing two type variables for subtype relation: $tv1 <:< $tv2")
+        tv1 eq tv2
+      case (_, tv2: TypeVar) =>
         val ntp1 = tp1.normalize
-        (tv2.params corresponds ntp1.typeParams)(methodHigherOrderTypeParamsSubVariance) &&
-        { tv2.addLoBound(ntp1); true }
-      case (tv1 @ TypeVar(_, _), tp2) =>
+        val kindsMatch = (ntp1.typeSymbol eq AnyClass) || hkSubVariance(tv2.params, ntp1.typeParams)
+        if (kindsMatch) tv2.addLoBound(ntp1)
+        kindsMatch
+      case (tv1: TypeVar, _) =>
         val ntp2 = tp2.normalize
-        (ntp2.typeParams corresponds tv1.params)(methodHigherOrderTypeParamsSubVariance) &&
-        { tv1.addHiBound(ntp2); true }
+        val kindsMatch = (ntp2.typeSymbol eq NothingClass) || hkSubVariance(ntp2.typeParams, tv1.params)
+        if (kindsMatch) tv1.addHiBound(ntp2)
+        kindsMatch
       case _ =>
         false
     }
 
     def isSub(tp1: Type, tp2: Type) =
       settings.isScala213 && isSubHKTypeVar(tp1, tp2) ||
-        isSub2(tp1.normalize, tp2.normalize)  // @M! normalize reduces higher-kinded case to PolyType's
+        isSub2(tp1.normalize, tp2.normalize)  // @M! normalize reduces higher-kinded typeref to PolyType
 
     def isSub2(ntp1: Type, ntp2: Type) = (ntp1, ntp2) match {
-      case (TypeRef(_, AnyClass, _), _)                                     => false                    // avoid some warnings when Nothing/Any are on the other side
-      case (_, TypeRef(_, NothingClass, _))                                 => false
-      case (pt1: PolyType, pt2: PolyType)                                   => isPolySubType(pt1, pt2)  // @assume both .isHigherKinded (both normalized to PolyType)
-      case (_: PolyType, MethodType(ps, _)) if ps exists (_.tpe.isWildcard) => false                    // don't warn on HasMethodMatching on right hand side
-      case _                                                                =>                          // @assume !(both .isHigherKinded) thus cannot be subtypes
+      case (pt1: PolyType, pt2: PolyType)                                   => isPolySubType(pt1, pt2) // @assume both .isHigherKinded (both normalized to PolyType)
+      case (WildcardType, _) | (_, WildcardType)                            => true  // treat `?` as kind-polymorphic
+      case (TypeRef(_, AnyClass, _), _) | (_, TypeRef(_, NothingClass, _))  => false // avoid some warnings when Nothing/Any are on the other side
+      case (_: PolyType, MethodType(ps, _)) if ps exists (_.tpe.isWildcard) => false // don't warn on HasMethodMatching on right hand side
+      // TODO: rethink whether ExistentialType should be considered isHigherKinded when its underlying type is;
+      // in any case, we do need to handle one of the types being an existential
+      case (tp1, et2: ExistentialType)                                      => et2.withTypeVars(isSubType(tp1, _, depth), depth)
+      case (et1: ExistentialType, tp2)                                      =>
+        try {
+          skolemizationLevel += 1
+          isSubType(et1.skolemizeExistential, tp2, depth)
+        } finally { skolemizationLevel -= 1 }
+      case _                                                                => // @assume !(both .isHigherKinded) thus cannot be subtypes
         def tp_s(tp: Type): String = f"$tp%-20s ${util.shortClassOfInstance(tp)}%s"
         devWarning(s"HK subtype check on $tp1 and $tp2, but both don't normalize to polytypes:\n  tp1=${tp_s(ntp1)}\n  tp2=${tp_s(ntp2)}")
         false
@@ -450,7 +460,7 @@ trait TypeComparers {
             // These typerefs are pattern matched up and down far more
             // than is necessary.
             val sym1 = tr1.sym
-            val sym2 = tr2.sym
+            val sym2 = if (!phase.erasedTypes && (tr2 eq ObjectTpeJava)) AnyClass else tr2.sym
             val pre1 = tr1.pre
             val pre2 = tr2.pre
             (((if (sym1 eq sym2) phase.erasedTypes || sym1.owner.hasPackageFlag || isSubType(pre1, pre2, depth)
@@ -499,7 +509,7 @@ trait TypeComparers {
           annotationsConform(tp1, tp2)
       case tv @ TypeVar(_,_) =>
         tv.registerBound(tp2, isLowerBound = false)
-      case ExistentialType(_, _) =>
+      case ExistentialType(_, _) => // TODO: fast initial try for tp1 and tp2 both existentials? (first try instantiating tp2's existentials to tp1's skolems?)
         try {
           skolemizationLevel += 1
           isSubType(tp1.skolemizeExistential, tp2, depth)
@@ -548,7 +558,7 @@ trait TypeComparers {
             val res2 = mt2.resultType
             (sameLength(params1, params2) &&
               mt1.isImplicit == mt2.isImplicit &&
-              matchingParams(params1, params2, mt1.isJava, mt2.isJava) &&
+              matchingParams(params1, params2) &&
               isSubType(res1.substSym(params1, params2), res2, depth))
           // TODO: if mt1.params.isEmpty, consider NullaryMethodType?
           case _ =>

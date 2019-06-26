@@ -22,10 +22,7 @@ package scala
  *   def read() = in.read()
  * }
  * }}}
- *
- * @author  Nikolay Mihaylov
- * @since   2.1
  */
-class throws[T <: Throwable](cause: String = "") extends scala.annotation.StaticAnnotation {
+final class throws[T <: Throwable](cause: String = "") extends scala.annotation.StaticAnnotation {
   def this(clazz: Class[T]) = this("")
 }

@@ -36,10 +36,6 @@ package generic
  *    List(1, 2, 3, 4, 5) filterMap (i => if(i % 2 == 0) Some(i) else None)
  *    // == List(2, 4)
  * }}}
- *
- * @author Miles Sabin
- * @author J. Suereth
- * @since 2.10
  */
 trait IsIterableOnce[Repr] {
 

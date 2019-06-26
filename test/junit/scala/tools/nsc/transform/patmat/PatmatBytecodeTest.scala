@@ -7,8 +7,8 @@ import org.junit.runners.JUnit4
 
 import scala.tools.asm.Opcodes._
 import scala.tools.nsc.backend.jvm.AsmUtils._
-import scala.tools.testing.BytecodeTesting
-import scala.tools.testing.BytecodeTesting._
+import scala.tools.testkit.BytecodeTesting
+import scala.tools.testkit.BytecodeTesting._
 
 @RunWith(classOf[JUnit4])
 class PatmatBytecodeTest extends BytecodeTesting {
@@ -114,7 +114,7 @@ class PatmatBytecodeTest extends BytecodeTesting {
       """.stripMargin
     val c :: _ = optCompiler.compileClasses(code)
     assertSameSummary(getMethod(c, "a"), List(
-      NEW, DUP, ICONST_1, "boxToInteger", LDC, "<init>", ASTORE /*1*/,
+      NEW, DUP, ICONST_1, "valueOf", LDC, "<init>", ASTORE /*1*/,
       ALOAD /*1*/, "y", ASTORE /*2*/,
       ALOAD /*1*/, "x", INSTANCEOF, IFNE /*R*/,
       NEW, DUP, ALOAD /*1*/, "<init>", ATHROW,

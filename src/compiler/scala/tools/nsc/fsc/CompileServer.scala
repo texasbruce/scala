@@ -27,7 +27,6 @@ import scala.util.Properties
  *  that it can respond more quickly.
  *
  *  @author Martin Odersky
- *  @version 1.0
  */
 class StandardCompileServer(fixPort: Int = 0) extends SocketServer(fixPort) {
   lazy val compileSocket: CompileSocket = CompileSocket
@@ -84,7 +83,7 @@ class StandardCompileServer(fixPort: Int = 0) extends SocketServer(fixPort) {
     val input           = in.readLine()
 
     def fscError(msg: String): Unit = out println (
-      FakePos("fsc") + msg + "\n  fsc -help  gives more information"
+      "" + FakePos("fsc") + msg + "\n  fsc -help  gives more information"
     )
     if (input == null || password != guessedPassword)
       return

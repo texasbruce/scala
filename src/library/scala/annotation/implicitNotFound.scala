@@ -51,9 +51,5 @@ package scala.annotation
  *   k.n[String]
  *      ^
  * </pre>
- *
- *
- * @author Adriaan Moors
- * @since 2.8.1
  */
 final class implicitNotFound(msg: String) extends scala.annotation.StaticAnnotation {}

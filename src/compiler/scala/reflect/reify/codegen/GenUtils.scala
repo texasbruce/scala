@@ -13,6 +13,8 @@
 package scala.reflect.reify
 package codegen
 
+import scala.annotation.tailrec
+
 trait GenUtils {
   self: Reifier =>
 
@@ -42,7 +44,7 @@ trait GenUtils {
   def call(fname: String, args: Tree*): Tree =
     Apply(termPath(fname), args.toList)
 
-  def mirrorSelect(name: String): Tree   = termPath(nme.UNIVERSE_PREFIX + name)
+  def mirrorSelect(name: String): Tree   = termPath(nme.UNIVERSE_PREFIX.decoded + name)
   def mirrorSelect(name: TermName): Tree = mirrorSelect(name.toString)
 
   def mirrorMirrorSelect(name: TermName): Tree =
@@ -112,7 +114,8 @@ trait GenUtils {
     case _ => false
   }
 
-  def isCrossStageTypeBearer(tree: Tree): Boolean = tree match {
+  @tailrec
+  final def isCrossStageTypeBearer(tree: Tree): Boolean = tree match {
     case TypeApply(hk, _) => isCrossStageTypeBearer(hk)
     case Select(sym @ Select(_, ctor), nme.apply) if ctor == nme.WeakTypeTag || ctor == nme.TypeTag || ctor == nme.Expr => true
     case _ => false

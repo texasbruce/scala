@@ -15,7 +15,6 @@ package ast
 
 import java.lang.System.{lineSeparator => EOL}
 import symtab.Flags._
-import scala.language.postfixOps
 import scala.reflect.internal.util.ListOfNil
 
 /** The object `nodePrinter` converts the internal tree
@@ -67,8 +66,8 @@ abstract class NodePrinters {
     def showAttributes(tree: Tree): String = {
       if (infolevel == InfoLevel.Quiet) ""
       else {
-        try   { List(showSymbol(tree), showType(tree)) filterNot (_ == "") mkString ", " trim }
-        catch { case ex: Throwable => "sym= <error> " + ex.getMessage }
+        try List(showSymbol(tree), showType(tree)).filterNot(_ == "").mkString(", ").trim
+        catch { case ex: Throwable => s"sym= <error> ${ex.getMessage}" }
       }
     }
   }
@@ -205,7 +204,7 @@ abstract class NodePrinters {
       else if (trees.tail.isEmpty)
         traverse(trees.head)
       else {
-        printLine("", trees.length + " " + what + "s")
+        printLine("", "" + trees.length + " " + what + "s")
         trees foreach traverse
       }
     }
@@ -295,7 +294,7 @@ abstract class NodePrinters {
                 printLine("", "1 parameter list")
                 ps foreach traverse
               case pss        =>
-                printLine("", pss.length + " parameter lists")
+                printLine("", "" + pss.length + " parameter lists")
                 pss foreach (ps => traverseList("()", "parameter")(ps))
             }
             traverse(tpt)

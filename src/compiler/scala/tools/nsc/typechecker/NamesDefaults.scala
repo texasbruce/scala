@@ -20,7 +20,6 @@ import PartialFunction.{ cond => when }
 
 /**
  *  @author Lukas Rytz
- *  @version 1.0
  */
 trait NamesDefaults { self: Analyzer =>
 
@@ -530,7 +529,7 @@ trait NamesDefaults { self: Analyzer =>
         val NamedArg(Ident(name), rhs) = arg
         params indexWhere (p => matchesName(p, name, argIndex)) match {
           case -1 =>
-            val warnVariableInScope = !settings.isScala214 && context0.lookupSymbol(name, _.isVariable).isSuccess
+            val warnVariableInScope = !currentRun.isScala214 && context0.lookupSymbol(name, _.isVariable).isSuccess
             UnknownParameterNameNamesDefaultError(arg, name, warnVariableInScope)
           case paramPos if argPos contains paramPos =>
             val existingArgIndex = argPos.indexWhere(_ == paramPos)

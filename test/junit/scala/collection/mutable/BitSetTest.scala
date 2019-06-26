@@ -3,6 +3,9 @@ package scala.collection.mutable
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
+import org.junit.Assert._
+
+import scala.tools.testkit.AssertUtil._
 
 @RunWith(classOf[JUnit4])
 class BitSetTest {
@@ -55,8 +58,8 @@ class BitSetTest {
     assert(m.map(i => i + 1).isInstanceOf[BitSet])
 
     val im = collection.immutable.BitSet(1)
-    assert(im.map(i=>i.toLong).isInstanceOf[collection.immutable.TreeSet[Long]])
-    assert(im.map(i=>i + 1).isInstanceOf[collection.immutable.BitSet])
+    assert(im.map(i=> i.toLong).isInstanceOf[collection.immutable.TreeSet[Long]])
+    assert(im.map(i=> i + 1).isInstanceOf[collection.immutable.BitSet])
 
     // SI-10879
     assert(m.flatMap(i => Seq(i.toLong)).isInstanceOf[TreeSet[Long]])
@@ -108,11 +111,17 @@ class BitSetTest {
   @Test def diff(): Unit = {
     val a = BitSet(1, 2, 3)
     val b = BitSet(2, 4, 6)
-    assert(a.diff(b) == BitSet(1, 3))
+    assertEquals(BitSet(1, 3), a.diff(b))
     assert(b.diff(a) == BitSet(4, 6))
     assert(a.diff(BitSet(4, 6)) == BitSet(1, 2, 3))
     assert(a.diff(BitSet()) == BitSet(1, 2, 3))
     assert(BitSet().diff(a) == BitSet())
     assert(BitSet().diff(BitSet()) == BitSet())
+  }
+
+  @Test def buildFromRange(): Unit = {
+    import scala.util.chaining._
+    assert((1 to 1000).to(BitSet) == BitSet().tap(bs => (1 to 1000).foreach(bs.addOne)))
+
   }
 }

@@ -76,7 +76,7 @@ class HashMapTest {
   def testWithDefault: Unit = {
     val m1 = HashMap(1 -> "a", 2 -> "b")
 
-    val m2: Map.WithDefault[Int, String] =
+    val m2: Map[Int, String] =
       m1.withDefault(i => (i + 1).toString)
         .updated(1, "aa")
         .updated(100, "bb")
@@ -90,10 +90,10 @@ class HashMapTest {
     assertEquals(m2(501), "c")
     assertEquals(m2(502), "503")
 
-    val m3: Map.WithDefault[Int, String] = m2 - 1
+    val m3: Map[Int, String] = m2 - 1
     assertEquals(m3(1), "2")
 
-    val m4: Map.WithDefault[Int, String] = m3 -- List(2, 100)
+    val m4: Map[Int, String] = m3 -- List(2, 100)
     assertEquals(m4(2), "3")
     assertEquals(m4(100), "101")
   }
@@ -107,6 +107,7 @@ class HashMapTest {
     val expected = HashMap(A(0) -> 1, A(1) -> 1)
     assertEquals(merged, expected)
   }
+
   @Test
   def transformReturnsOriginalMap() {
     case class A(i: Int, j: Int) { override def hashCode = j }
@@ -120,5 +121,18 @@ class HashMapTest {
 
     assert(hashMap.transform((_, v) => v) eq hashMap)
   }
-}
 
+  @Test
+  def testUpdatedWith(): Unit = {
+    val hashMap = HashMap(1 -> "a")
+
+    val insertIfAbesent: Option[String] => Option[String] = _.orElse(Some("b"))
+    assertEquals(hashMap.updatedWith(1)(insertIfAbesent), HashMap(1 -> "a"))
+    assertEquals(hashMap.updatedWith(2)(insertIfAbesent), HashMap(1 -> "a", 2 -> "b"))
+
+    val noneAnytime: Option[String] => Option[String] = _ => None
+    assertEquals(hashMap.updatedWith(1)(noneAnytime), HashMap())
+    assertEquals(hashMap.updatedWith(2)(noneAnytime), HashMap(1 -> "a"))
+  }
+
+}

@@ -13,10 +13,11 @@
 package scala.tools.nsc
 package ast
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 import symtab.Flags._
-import scala.language.postfixOps
 import scala.reflect.internal.util.FreshNameCreator
+import scala.reflect.internal.util.ListOfNil
 
 /** XXX to resolve: TreeGen only assumes global is a SymbolTable, but
  *  TreeDSL at the moment expects a Global.  Can we get by with SymbolTable?
@@ -105,7 +106,7 @@ abstract class TreeGen extends scala.reflect.internal.TreeGen with TreeDSL {
   def mkAppliedTypeForCase(clazz: Symbol): Tree = {
     val numParams = clazz.typeParams.size
     if (clazz.typeParams.isEmpty) Ident(clazz)
-    else AppliedTypeTree(Ident(clazz), 1 to numParams map (_ => Bind(tpnme.WILDCARD, EmptyTree)) toList)
+    else AppliedTypeTree(Ident(clazz), (1 to numParams).map(_ => Bind(tpnme.WILDCARD, EmptyTree)).toList)
   }
   def mkBindForCase(patVar: Symbol, clazz: Symbol, targs: List[Type]): Tree = {
     Bind(patVar, Typed(Ident(nme.WILDCARD),
@@ -265,6 +266,7 @@ abstract class TreeGen extends scala.reflect.internal.TreeGen with TreeDSL {
 
   // used to create the lifted method that holds a function's body
   def mkLiftedFunctionBodyMethod(localTyper: global.analyzer.Typer)(owner: global.Symbol, fun: global.Function) = {
+    @tailrec
     def nonLocalEnclosingMember(sym: Symbol): Symbol = {
       if (sym.isLocalDummy) sym.enclClass.primaryConstructor
       else if (sym.isLocalToBlock) nonLocalEnclosingMember(sym.originalOwner)
@@ -369,7 +371,7 @@ abstract class TreeGen extends scala.reflect.internal.TreeGen with TreeDSL {
       anonClass addAnnotation SerialVersionUIDAnnotation
       addSerializable(abstractFunctionType(fun.vparams.map(_.symbol.tpe), fun.body.tpe.deconst))
     } else {
-      if (fun.tpe.typeSymbol.isSubClass(JavaSerializableClass))
+      if (fun.tpe.typeSymbol.isSubClass(SerializableClass))
         anonClass addAnnotation SerialVersionUIDAnnotation
       fun.tpe :: Nil
     }
@@ -391,4 +393,6 @@ abstract class TreeGen extends scala.reflect.internal.TreeGen with TreeDSL {
   }
 
   override def isPatVarWarnable = settings.warnUnusedPatVars
+
+  override def isVarDefWarnable = settings.lintValPatterns
 }

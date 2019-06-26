@@ -29,7 +29,7 @@ package scala.concurrent
  * {{{
  *  val oldContext = BlockContext.current
  *  val myContext = new BlockContext {
- *    override def blockOn[T](thunk: =>T)(implicit permission: CanAwait): T = {
+ *    override def blockOn[T](thunk: => T)(implicit permission: CanAwait): T = {
  *      // you'd have code here doing whatever you need to do
  *      // when the thread is about to block.
  *      // Then you'd chain to the previous context:
@@ -54,12 +54,12 @@ trait BlockContext {
     *
     * @throws IllegalArgumentException if the `permission` is `null`
     */
-  def blockOn[T](thunk: =>T)(implicit permission: CanAwait): T
+  def blockOn[T](thunk: => T)(implicit permission: CanAwait): T
 }
 
 object BlockContext {
-  private[this] final object DefaultBlockContext extends BlockContext {
-    override final def blockOn[T](thunk: =>T)(implicit permission: CanAwait): T = thunk
+  private[this] object DefaultBlockContext extends BlockContext {
+    override final def blockOn[T](thunk: => T)(implicit permission: CanAwait): T = thunk
   }
 
   /**
@@ -88,11 +88,10 @@ object BlockContext {
    **/
   final def withBlockContext[T](blockContext: BlockContext)(body: => T): T = {
     val old = contextLocal.get // can be null
-    try {
+    if (old eq blockContext) body
+    else {
       contextLocal.set(blockContext)
-      body
-    } finally {
-      contextLocal.set(old)
+      try body finally contextLocal.set(old)
     }
   }
 
@@ -102,7 +101,10 @@ object BlockContext {
    **/
   final def usingBlockContext[I, T](blockContext: BlockContext)(f: BlockContext => T): T = {
     val old = contextLocal.get // can be null
-    contextLocal.set(blockContext)
-    try f(prefer(old)) finally contextLocal.set(old)
+    if (old eq blockContext) f(prefer(old))
+    else {
+      contextLocal.set(blockContext)
+      try f(prefer(old)) finally contextLocal.set(old)
+    }
   }
 }

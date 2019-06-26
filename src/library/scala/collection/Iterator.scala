@@ -49,42 +49,29 @@ import scala.runtime.Statics
   * }
   * }}}
   *
-  * @define consumesIterator
-  * After calling this method, one should discard the iterator it was called
-  * on. Using it is undefined and subject to change.
-  *
-  *  @define willNotTerminateInf
-  *  Note: will not terminate for infinite iterators.
-  *  @define mayNotTerminateInf
+  * @define mayNotTerminateInf
   *  Note: may not terminate for infinite iterators.
-  *  @define preservesIterator
+  * @define preservesIterator
   *  The iterator remains valid for further use whatever result is returned.
-  *  @define consumesIterator
+  * @define consumesIterator
   *  After calling this method, one should discard the iterator it was called
   *  on. Using it is undefined and subject to change.
-  *  @define consumesAndProducesIterator
+  * @define consumesAndProducesIterator
   *  After calling this method, one should discard the iterator it was called
   *  on, and use only the iterator that was returned. Using the old iterator
   *  is undefined, subject to change, and may result in changes to the new
   *  iterator as well.
-  *  @define consumesTwoAndProducesOneIterator
+  * @define consumesTwoAndProducesOneIterator
   *  After calling this method, one should discard the iterator it was called
   *  on, as well as the one passed as a parameter, and use only the iterator
   *  that was returned. Using the old iterators is undefined, subject to change,
   *  and may result in changes to the new iterator as well.
-  *  @define consumesOneAndProducesTwoIterators
+  * @define consumesOneAndProducesTwoIterators
   *  After calling this method, one should discard the iterator it was called
   *  on, and use only the iterators that were returned. Using the old iterator
   *  is undefined, subject to change, and may result in changes to the new
   *  iterators as well.
-  *  @define consumesTwoIterators
-  *  After calling this method, one should discard the iterator it was called
-  *  on, as well as the one passed as parameter. Using the old iterators is
-  *  undefined and subject to change.
-  *  @define undefinedorder
-  *  The order in which operations are performed on elements is unspecified
-  *  and may be nondeterministic.
-  *  @define coll iterator
+  * @define coll iterator
   */
 trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Iterator[A]] { self =>
 
@@ -196,7 +183,7 @@ trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Ite
      */
     def withPartial(x: Boolean): this.type = {
       _partial = x
-      if (_partial == true) // reset pad since otherwise it will take precedence
+      if (_partial) // reset pad since otherwise it will take precedence
         pad = None
 
       this
@@ -348,25 +335,28 @@ trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Ite
    *  the second argument `step` is how far to advance the window
    *  on each iteration. The `step` defaults to `1`.
    *
-   *  The default `GroupedIterator` can be configured to either
+   *  The returned `GroupedIterator` can be configured to either
    *  pad a partial result to size `size` or suppress the partial
    *  result entirely.
    *
    *  Example usages:
    *  {{{
-   *    // Returns List(List(1, 2, 3), List(2, 3, 4), List(3, 4, 5))
+   *    // Returns List(ArraySeq(1, 2, 3), ArraySeq(2, 3, 4), ArraySeq(3, 4, 5))
    *    (1 to 5).iterator.sliding(3).toList
-   *    // Returns List(List(1, 2, 3, 4), List(4, 5))
+   *    // Returns List(ArraySeq(1, 2, 3, 4), ArraySeq(4, 5))
    *    (1 to 5).iterator.sliding(4, 3).toList
-   *    // Returns List(List(1, 2, 3, 4))
+   *    // Returns List(ArraySeq(1, 2, 3, 4))
    *    (1 to 5).iterator.sliding(4, 3).withPartial(false).toList
-   *    // Returns List(List(1, 2, 3, 4), List(4, 5, 20, 25))
+   *    // Returns List(ArraySeq(1, 2, 3, 4), ArraySeq(4, 5, 20, 25))
    *    // Illustrating that withPadding's argument is by-name.
    *    val it2 = Iterator.iterate(20)(_ + 5)
    *    (1 to 5).iterator.sliding(4, 3).withPadding(it2.next).toList
    *  }}}
    *
-   *  @return An iterator producing `Seq[B]`s of size `size`, except the
+   *  @param size the number of elements per group
+   *  @param step the distance between the first elements of successive
+   *         groups
+   *  @return A `GroupedIterator` producing `Seq[B]`s of size `size`, except the
    *          last element (which may be the only element) will be truncated
    *          if there are fewer than `size` elements remaining to be grouped.
    *          This behavior can be configured.
@@ -570,8 +560,10 @@ trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Ite
   def flatMap[B](f: A => IterableOnce[B]): Iterator[B] = new AbstractIterator[B] {
     private[this] var myCurrent: Iterator[B] = Iterator.empty
     private def current = {
-      while (!myCurrent.hasNext && self.hasNext)
+      while (!myCurrent.hasNext && self.hasNext) {
+        myCurrent = null   // clear the stale reference before advancing
         myCurrent = f(self.next()).iterator
+      }
       myCurrent
     }
     def hasNext = current.hasNext
@@ -648,7 +640,7 @@ trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Ite
      * iterator is referring (the finish() method) and thus triggering
      * handling of structural calls. It's not what's intended here.
      */
-    class Leading extends AbstractIterator[A] {
+    final class Leading extends AbstractIterator[A] {
       private[this] var lookahead: mutable.Queue[A] = null
       private[this] var hd: A = _
       /* Status is kept with magic numbers
@@ -681,6 +673,7 @@ trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Ite
         }
         else Iterator.empty.next()
       }
+      @tailrec
       def finish(): Boolean = status match {
         case -2 => status = -1 ; true
         case -1 => false
@@ -873,6 +866,16 @@ trait Iterator[+A] extends IterableOnce[A] with IterableOnceOps[A, Iterator, Ite
         }
       }
     }
+
+  override def tapEach[U](f: A => U): Iterator[A] = new AbstractIterator[A] {
+    override def knownSize = self.knownSize
+    override def hasNext = self.hasNext
+    override def next() = {
+      val _next = self.next()
+      f(_next)
+      _next
+    }
+  }
 
   /** Converts this iterator to a string.
    *

@@ -13,8 +13,6 @@
 package scala.tools.nsc
 package typechecker
 
-import scala.language.postfixOps
-
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.tools.nsc.settings.ScalaVersion
@@ -22,7 +20,6 @@ import scala.tools.nsc.settings.NoScalaVersion
 
 import symtab.Flags._
 import transform.Transform
-
 
 /** <p>
  *    Post-attribution checking and transformation.
@@ -46,7 +43,6 @@ import transform.Transform
  *  </ul>
  *
  *  @author  Martin Odersky
- *  @version 1.0
  *
  *  @todo    Check whether we always check type parameter bounds.
  */
@@ -115,13 +111,26 @@ abstract class RefChecks extends Transform {
 
     var localTyper: analyzer.Typer = typer
     var currentApplication: Tree = EmptyTree
+    var inAnnotation: Boolean = false
     var inPattern: Boolean = false
     @inline final def savingInPattern[A](body: => A): A = {
       val saved = inPattern
       try body finally inPattern = saved
     }
 
-    var checkedCombinations = Set[List[Type]]()
+    // Track symbols of the refinement's parents and the base at which we've checked them,
+    // as well as the entire refinement type seen at that base.
+    // No need to check the same symbols again in a base that's a subclass of a previously checked base
+    private val checkedCombinations = mutable.Map[List[Symbol], (Symbol, Type)]()
+    private def notYetCheckedOrAdd(rt: RefinedType, currentBase: Symbol) = {
+      val seen = checkedCombinations.get(rt.parents.map(_.typeSymbol)).exists {
+        case (prevBase, prevTp) => currentBase.isSubClass(prevBase) && rt =:= prevTp.asSeenFrom(currentBase.thisType, prevBase)
+      }
+
+      if (!seen) checkedCombinations.addOne((rt.parents.map(_.typeSymbol), (currentBase, rt)))
+
+      !seen
+    }
 
     // only one overloaded alternative is allowed to define default arguments
     private def checkOverloadedRestrictions(clazz: Symbol, defaultClass: Symbol): Unit = {
@@ -139,12 +148,7 @@ abstract class RefChecks extends Transform {
           case MethodType(params, restpe) => (params exists (_.hasDefault)) || hasDefaultParam(restpe)
           case _                          => false
         }
-        val haveDefaults = methods filter (
-          if (settings.isScala211)
-             (sym => mexists(sym.info.paramss)(_.hasDefault) && !nme.isProtectedAccessorName(sym.name))
-          else
-            (sym => hasDefaultParam(sym.info) && !nme.isProtectedAccessorName(sym.name))
-        )
+        val haveDefaults = methods.filter(sym => mexists(sym.info.paramss)(_.hasDefault) && !nme.isProtectedAccessorName(sym.name))
 
         if (haveDefaults.lengthCompare(1) > 0) {
           val owners = haveDefaults map (_.owner)
@@ -251,7 +255,6 @@ abstract class RefChecks extends Transform {
      *    1.2. O must not be final.
      *    1.3. O is deferred, or M has `override` modifier.
      *    1.4. If O is stable, then so is M.
-     *     // @M: LIFTED 1.5. Neither M nor O are a parameterized type alias
      *    1.6. If O is a type alias, then M is an alias of O.
      *    1.7. If O is an abstract type then
      *       1.7.1 either M is an abstract type, and M's bounds are sharper than O's bounds.
@@ -295,251 +298,225 @@ abstract class RefChecks extends Transform {
       def infoStringWithLocation(sym: Symbol) = infoString0(sym, true)
 
       def infoString0(member: Symbol, showLocation: Boolean) = {
-        val underlying = // not using analyzer.underlyingSymbol(member) because we should get rid of it
-          if (!(member hasFlag ACCESSOR)) member
-          else member.accessed match {
-              case field if field.exists => field
-              case _ if member.isSetter  => member.getterIn(member.owner)
-              case _ => member
-            }
-
-        def memberInfo =
-          self.memberInfo(underlying) match {
-            case getterTp if underlying.isGetter => getterTp.resultType
-            case tp => tp
+        val location =
+          if (!showLocation) ""
+          else member.ownsString match {
+            case ""   => ""
+            case s    => s" (defined in $s)"
           }
+        val macroStr = if (member.isTermMacro) "macro " else ""
 
-        underlying.toString() +
-        (if (showLocation)
-          underlying.locationString +
-          (if (underlying.isAliasType)         s", which equals $memberInfo"
-           else if (underlying.isAbstractType) s" with bounds$memberInfo"
-           else if (underlying.isModule)       ""
-           else if (underlying.isTerm)         s" of type $memberInfo"
-           else                                "")
-         else "")
+        macroStr + member.defStringSeenAs(self.memberInfo(member)) + location
       }
 
-      /* Check that all conditions for overriding `other` by `member`
-       * of class `clazz` are met.
-       */
+      /** Check that all conditions for overriding `other` by `member` of class `clazz` are met.
+        *
+        * TODO: error messages could really be improved, including how they are composed
+        */
       def checkOverride(pair: SymbolPair): Unit = {
-        import pair._
-        val member   = low
-        val other    = high
+        import pair.{highType, lowType, highInfo, rootType}
 
-//        debuglog(s"Checking validity of ${member.fullLocationString} overriding ${other.fullLocationString}")
+        val member = pair.low
+        val other = pair.high
+        val memberClass = member.owner
+        val otherClass = other.owner
+
+        //        debuglog(s"Checking validity of ${member.fullLocationString} overriding ${other.fullLocationString}")
 
         def noErrorType = !pair.isErroneous
         def isRootOrNone(sym: Symbol) = sym != null && sym.isRoot || sym == NoSymbol
-        def isNeitherInClass = member.owner != pair.base && other.owner != pair.base
-
-        def objectOverrideErrorMsg = (
-          "overriding " + high.fullLocationString + " with " + low.fullLocationString + ":\n" +
-          "an overriding object must conform to the overridden object's class bound" +
-          analyzer.foundReqMsg(pair.lowClassBound, pair.highClassBound)
-        )
+        def isNeitherInClass = memberClass != clazz && otherClass != clazz
 
         val indent = "  "
-        def overrideErrorMsg(msg: String): String = {
+        def overriddenWithAddendum(msg: String, foundReq: Boolean = settings.debug.value): String = {
           val isConcreteOverAbstract =
-            (other.owner isSubClass member.owner) && other.isDeferred && !member.isDeferred
+            (otherClass isSubClass memberClass) && other.isDeferred && !member.isDeferred
           val addendum =
             if (isConcreteOverAbstract)
               s";\n${indent}(note that ${infoStringWithLocation(other)} is abstract,\n" +
               s"${indent}and is therefore overridden by concrete ${infoStringWithLocation(member)})"
-            else if (settings.debug)
-              analyzer.foundReqMsg(member.tpe, other.tpe)
+            else if (foundReq) {
+              def info(sym: Symbol) = self.memberInfo(sym) match { case tp if sym.isGetter || sym.isValue && !sym.isMethod => tp.resultType case tp => tp }
+              analyzer.foundReqMsg(info(member), info(other))
+            }
             else ""
 
-          s"overriding ${infoStringWithLocation(other)};\n$indent$msg$addendum"
+          infoStringWithLocation(other) + (if (msg.isEmpty) "" else s"\n$indent") + msg + addendum
         }
         def emitOverrideError(fullmsg: String): Unit = {
-          if (member.owner == clazz) reporter.error(member.pos, fullmsg)
+          if (memberClass == clazz) reporter.error(member.pos, fullmsg)
           else mixinOverrideErrors += MixinOverrideError(member, fullmsg)
         }
 
-        def overrideError(msg: String): Unit = {
-          if (noErrorType)
-            emitOverrideError(overrideErrorMsg(infoString(member) + " " + msg))
-        }
+        def overrideErrorWithMemberInfo(msg: String): Unit =
+          if (noErrorType) emitOverrideError(msg + "\n" + overriddenWithAddendum(if (member.owner == clazz) "" else s"with ${infoString(member)}"))
+
+        def overrideError(msg: String): Unit =
+          if (noErrorType) emitOverrideError(msg)
 
         def overrideTypeError(): Unit = {
-          if (noErrorType) {
-            emitOverrideError(
-              if (member.isModule && other.isModule) objectOverrideErrorMsg
-              else if (!other.isDeferred && other.isAliasType) overrideErrorMsg(s"overriding concrete type alias ${infoString(member)} is not allowed except when equivalent")
-              else overrideErrorMsg(s"${infoString(member)} has incompatible type")
-            )
+          if (member.isModule && other.isModule)
+            overrideError(s"overriding ${other.fullLocationString} with ${member.fullLocationString}:\n" +
+                          "an overriding object must conform to the overridden object's class bound" +
+                          analyzer.foundReqMsg(pair.lowClassBound, pair.highClassBound))
+          else {
+            val needSameType = !other.isDeferred && other.isAliasType
+            val msg =
+              (if (member.owner == clazz) "" else s"with ${infoString(member)}") +
+              (if (needSameType) " (Equivalent type required when overriding a type alias.)" else "")
+
+            overrideError("incompatible type in overriding\n" + overriddenWithAddendum(msg, foundReq = !needSameType))
           }
+        }
+
+        def overrideErrorConcreteMissingOverride() = {
+          if (isNeitherInClass && !(otherClass isSubClass memberClass))
+            emitOverrideError(clazz + " inherits conflicting members:\n"
+                               + indent + infoStringWithLocation(other) + " and\n"
+                               + indent + infoStringWithLocation(member) + "\n"
+                               + indent + s"(note: this can be resolved by declaring an `override` in $clazz.)")
+          else
+            overrideErrorWithMemberInfo("`override` modifier required to override concrete member:")
         }
 
         def overrideAccessError(): Unit = {
           val otherAccess = accessFlagsToString(other)
-          overrideError("has weaker access privileges; it should be "+ (if (otherAccess == "") "public" else "at least "+otherAccess))
+          overrideError("weaker access privileges in overriding\n"+
+                        overriddenWithAddendum(s"override should ${(if (otherAccess == "") "be public" else "at least be " + otherAccess)}"))
         }
 
         //Console.println(infoString(member) + " overrides " + infoString(other) + " in " + clazz);//DEBUG
-
-        // return if we already checked this combination elsewhere
-        if (member.owner != clazz) {
-          def deferredCheck        = member.isDeferred || !other.isDeferred
-          def subOther(s: Symbol)  = s isSubClass other.owner
-          def subMember(s: Symbol) = s isSubClass member.owner
-
-          if (subOther(member.owner) && deferredCheck) {
-            //Console.println(infoString(member) + " shadows1 " + infoString(other) " in " + clazz);//DEBUG
-            return
-          }
-          if (clazz.parentSymbols exists (p => subOther(p) && subMember(p) && deferredCheck)) {
-            //Console.println(infoString(member) + " shadows2 " + infoString(other) + " in " + clazz);//DEBUG
-            return
-          }
-          if (clazz.parentSymbols forall (p => subOther(p) == subMember(p))) {
-            //Console.println(infoString(member) + " shadows " + infoString(other) + " in " + clazz);//DEBUG
-            return
-          }
-        }
 
         /* Is the intersection between given two lists of overridden symbols empty? */
         def intersectionIsEmpty(syms1: List[Symbol], syms2: List[Symbol]) =
           !(syms1 exists (syms2 contains _))
 
-        if (typesOnly) checkOverrideTypes()
+        if (memberClass == ObjectClass && otherClass == AnyClass) {} // skip -- can we have a mode of symbolpairs where this pair doesn't even appear?
+        else if (typesOnly) checkOverrideTypes()
         else {
           // o: public | protected        | package-protected  (aka java's default access)
           // ^-may be overridden by member with access privileges-v
           // m: public | public/protected | public/protected/package-protected-in-same-package-as-o
 
           if (member.isPrivate) // (1.1)
-            overrideError("has weaker access privileges; it should not be private")
+            overrideError("weaker access privileges in overriding\n"+
+                          overriddenWithAddendum(s"override should not be private"))
 
           // todo: align accessibility implication checking with isAccessible in Contexts
-          val ob = other.accessBoundary(member.owner)
-          val mb = member.accessBoundary(member.owner)
+          val ob = other.accessBoundary(memberClass)
+          val mb = member.accessBoundary(memberClass)
           def isOverrideAccessOK = member.isPublic || {      // member is public, definitely same or relaxed access
             (!other.isProtected || member.isProtected) &&    // if o is protected, so is m
             ((!isRootOrNone(ob) && ob.hasTransOwner(mb)) ||  // m relaxes o's access boundary
-              other.isJavaDefined)                           // overriding a protected java member, see #3946
+             other.isJavaDefined)                           // overriding a protected java member, see #3946
           }
           if (!isOverrideAccessOK) {
             overrideAccessError()
           } else if (other.isClass) {
-            overrideError("cannot be used here - class definitions cannot be overridden")
+            overrideErrorWithMemberInfo("class definitions cannot be overridden:")
           } else if (!other.isDeferred && member.isClass) {
-            overrideError("cannot be used here - classes can only override abstract types")
+            overrideErrorWithMemberInfo("classes can only override abstract types; cannot override:")
           } else if (other.isEffectivelyFinal) { // (1.2)
-            overrideError("cannot override final member")
-          } else if (!other.isDeferred && !member.isAnyOverride && !member.isSynthetic) { // (*)
-            // (*) Synthetic exclusion for (at least) default getters, fixes scala/bug#5178. We cannot assign the OVERRIDE flag to
+            overrideErrorWithMemberInfo("cannot override final member:")
+          } else {
+            // In Java, the OVERRIDE flag is implied
+            val memberOverrides = member.isAnyOverride || (member.isJavaDefined && !member.isDeferred)
+
+            // Concrete `other` requires `override` for `member`.
+            // Synthetic exclusion for (at least) default getters, fixes scala/bug#5178. We cannot assign the OVERRIDE flag to
             // the default getter: one default getter might sometimes override, sometimes not. Example in comment on ticket.
-              if (isNeitherInClass && !(other.owner isSubClass member.owner))
-                emitOverrideError(
-                  clazz + " inherits conflicting members:\n"
-                    + indent + infoStringWithLocation(other) + " and\n"
-                    + indent + infoStringWithLocation(member) + "\n"
-                    + indent + s"(note: this can be resolved by declaring an `override' in $clazz.)"
-                )
-              else
-                overrideError("needs `override' modifier")
-          } else if (other.isAbstractOverride && other.isIncompleteIn(clazz) && !member.isAbstractOverride) {
-            overrideError("needs `abstract override' modifiers")
-          }
-          else if (member.isAnyOverride && (other hasFlag ACCESSOR) && !(other hasFlag STABLE | DEFERRED)) {
-            // The check above used to look at `field` == `other.accessed`, ensuring field.isVariable && !field.isLazy,
-            // which I think is identical to the more direct `!(other hasFlag STABLE)` (given that `other` is a method).
-            // Also, we're moving away from (looking at) underlying fields (vals in traits no longer have them, to begin with)
-            // TODO: this is not covered by the spec.
-            overrideError("cannot override a mutable variable")
-          }
-          else if (member.isAnyOverride &&
-                     !(member.owner.thisType.baseClasses exists (_ isSubClass other.owner)) &&
+            if (!(memberOverrides || other.isDeferred) && !member.isSynthetic) {
+              overrideErrorConcreteMissingOverride()
+            } else if (other.isAbstractOverride && other.isIncompleteIn(clazz) && !member.isAbstractOverride) {
+              overrideErrorWithMemberInfo("`abstract override' modifiers required to override:")
+            }
+            else if (memberOverrides && (other hasFlag ACCESSOR) && !(other hasFlag STABLE | DEFERRED)) {
+              // TODO: this is not covered by the spec.
+              overrideErrorWithMemberInfo("mutable variable cannot be overridden:")
+            }
+            else if (memberOverrides &&
+                     !(memberClass.thisType.baseClasses exists (_ isSubClass otherClass)) &&
                      !member.isDeferred && !other.isDeferred &&
                      intersectionIsEmpty(member.extendedOverriddenSymbols, other.extendedOverriddenSymbols)) {
-            overrideError("cannot override a concrete member without a third member that's overridden by both "+
-                          "(this rule is designed to prevent ``accidental overrides'')")
-          } else if (other.isStable && !member.isStable) { // (1.4)
-            overrideError("needs to be a stable, immutable value")
-          } else if (member.isValue && member.isLazy &&
-                     other.isValue && other.hasFlag(STABLE) && !(other.isDeferred || other.isLazy)) {
-            overrideError("cannot override a concrete non-lazy value")
-          } else if (other.isValue && other.isLazy &&
-                     member.isValue && !member.isLazy) {
-            overrideError("must be declared lazy to override a concrete lazy value")
-          } else if (other.isDeferred && member.isTermMacro && member.extendedOverriddenSymbols.forall(_.isDeferred)) { // (1.9)
-            overrideError("cannot be used here - term macros cannot override abstract methods")
-          } else if (other.isTermMacro && !member.isTermMacro) { // (1.10)
-            overrideError("cannot be used here - only term macros can override term macros")
-          } else {
-            checkOverrideTypes()
-            checkOverrideDeprecated()
-            if (settings.warnNullaryOverride) {
-              if (other.paramss.isEmpty && !member.paramss.isEmpty && !member.isJavaDefined) {
-                reporter.warning(member.pos, "non-nullary method overrides nullary method")
+              overrideErrorWithMemberInfo("cannot override a concrete member without a third member that's overridden by both " +
+                                          "(this rule is designed to prevent ``accidental overrides'')")
+            } else if (other.isStable && !member.isStable) { // (1.4)
+              overrideErrorWithMemberInfo("stable, immutable value required to override:")
+            } else if (member.isValue && member.isLazy &&
+                       other.isValue && other.hasFlag(STABLE) && !(other.isDeferred || other.isLazy)) {
+              overrideErrorWithMemberInfo("concrete non-lazy value cannot be overridden:")
+            } else if (other.isValue && other.isLazy &&
+                       member.isValue && !member.isLazy) {
+              overrideErrorWithMemberInfo("value must be lazy when overriding concrete lazy value:")
+            } else if (other.isDeferred && member.isTermMacro && member.extendedOverriddenSymbols.forall(_.isDeferred)) { // (1.9)
+              overrideErrorWithMemberInfo("macro cannot override abstract method:")
+            } else if (other.isTermMacro && !member.isTermMacro) { // (1.10)
+              overrideErrorWithMemberInfo("macro can only be overridden by another macro:")
+            } else {
+              checkOverrideTypes()
+              // Don't bother users with deprecations caused by classes they inherit.
+              // Only warn for the pair that has one leg in `clazz`.
+              if (clazz == memberClass) checkOverrideDeprecated()
+              if (settings.warnNullaryOverride) {
+                if (other.paramss.isEmpty && !member.paramss.isEmpty && !member.isJavaDefined) {
+                  reporter.warning(member.pos, "non-nullary method overrides nullary method")
+                }
               }
             }
           }
         }
 
-        //if (!member.typeParams.isEmpty) (1.5)  @MAT
-        //  overrideError("may not be parameterized");
-        //if (!other.typeParams.isEmpty)  (1.5)   @MAT
-        //  overrideError("may not override parameterized type");
-        // @M: substSym
         def checkOverrideAlias(): Unit = {
           // Important: first check the pair has the same kind, since the substitution
           // carries high's type parameter's bounds over to low, so that
           // type equality doesn't consider potentially different bounds on low/high's type params.
           // In b781e25afe this went from using memberInfo to memberType (now lowType/highType), tested by neg/override.scala.
           // TODO: was that the right fix? it seems type alias's RHS should be checked by looking at the symbol's info
-          if (pair.sameKind && lowType.substSym(low.typeParams, high.typeParams) =:= highType) ()
+          if (pair.sameKind && lowType.substSym(member.typeParams, other.typeParams) =:= highType) ()
           else overrideTypeError() // (1.6)
         }
-        //if (!member.typeParams.isEmpty) // (1.7)  @MAT
-        //  overrideError("may not be parameterized");
-        def checkOverrideAbstract(): Unit = {
+        def checkOverrideAbstractType(): Unit = {
           if (!(highInfo.bounds containsType lowType)) { // (1.7.1)
             overrideTypeError(); // todo: do an explaintypes with bounds here
             explainTypes(_.bounds containsType _, highInfo, lowType)
           }
           // check overriding (abstract type --> abstract type or abstract type --> concrete type member (a type alias))
           // making an abstract type member concrete is like passing a type argument
-          typer.infer.checkKindBounds(high :: Nil, lowType :: Nil, rootType, low.owner) match { // (1.7.2)
+          typer.infer.checkKindBounds(other :: Nil, lowType :: Nil, rootType, memberClass) match { // (1.7.2)
             case Nil        =>
             case kindErrors =>
               reporter.error(member.pos,
-                "The kind of "+member.keyString+" "+member.varianceString + member.nameString+
+                "The kind of " + member.keyString+" " + member.varianceString + member.nameString+
                 " does not conform to the expected kind of " + other.defString + other.locationString + "." +
                 kindErrors.toList.mkString("\n", ", ", ""))
           }
           // check a type alias's RHS corresponds to its declaration
           // this overlaps somewhat with validateVariance
-          if (low.isAliasType) {
-            typer.infer.checkKindBounds(low :: Nil, lowType.normalize :: Nil, rootType, low.owner) match {
+          if (member.isAliasType) {
+            typer.infer.checkKindBounds(member :: Nil, lowType.normalize :: Nil, rootType, memberClass) match {
               case Nil        =>
               case kindErrors =>
                 reporter.error(member.pos,
-                  "The kind of the right-hand side "+lowType.normalize+" of "+low.keyString+" "+
-                  low.varianceString + low.nameString+ " does not conform to its expected kind."+
+                  "The kind of the right-hand side "+lowType.normalize+" of " + member.keyString+" "+
+                  member.varianceString + member.nameString+ " does not conform to its expected kind."+
                   kindErrors.toList.mkString("\n", ", ", ""))
             }
           }
-          else if (low.isAbstractType && lowType.isVolatile && !highInfo.upperBound.isVolatile)
-            overrideError("is a volatile type; cannot override a type with non-volatile upper bound")
+          else if (member.isAbstractType && lowType.isVolatile && !highInfo.upperBound.isVolatile)
+            overrideErrorWithMemberInfo("volatile type member cannot override type member with non-volatile upper bound:")
         }
         def checkOverrideTerm(): Unit = {
           other.cookJavaRawInfo() // #2454
-          if (!overridesTypeInPrefix(lowType, highType, rootType, low.isModuleOrModuleClass && high.isModuleOrModuleClass)) { // 8
+          if (!overridesTypeInPrefix(lowType, highType, rootType, member.isModuleOrModuleClass && other.isModuleOrModuleClass)) { // 8
             overrideTypeError()
             explainTypes(lowType, highType)
           }
-          if (low.isStable && !highType.isVolatile) {
+          if (member.isStable && !highType.isVolatile) {
             if (lowType.isVolatile)
-              overrideError("has a volatile type; cannot override a member with non-volatile type")
+              overrideErrorWithMemberInfo("member with volatile type cannot override member with non-volatile type:")
             else lowType.normalize.resultType match {
-              case rt: RefinedType if !(rt =:= highType) && !(checkedCombinations contains rt.parents) =>
+              case rt: RefinedType if !(rt =:= highType) && notYetCheckedOrAdd(rt, pair.base) =>
                 // might mask some inconsistencies -- check overrides
-                checkedCombinations += rt.parents
                 val tsym = rt.typeSymbol
                 if (tsym.pos == NoPosition) tsym setPos member.pos
                 checkAllOverrides(tsym, typesOnly = true)
@@ -548,9 +525,9 @@ abstract class RefChecks extends Transform {
           }
         }
         def checkOverrideTypes(): Unit = {
-          if (high.isAliasType)         checkOverrideAlias()
-          else if (high.isAbstractType) checkOverrideAbstract()
-          else if (high.isTerm)         checkOverrideTerm()
+          if (other.isAliasType)         checkOverrideAlias()
+          else if (other.isAbstractType) checkOverrideAbstractType()
+          else if (other.isTerm)         checkOverrideTerm()
         }
 
         def checkOverrideDeprecated(): Unit = {
@@ -579,14 +556,14 @@ abstract class RefChecks extends Transform {
         def abstractErrorMessage =
           // a little formatting polish
           if (abstractErrors.size <= 2) abstractErrors mkString " "
-          else abstractErrors.tail.mkString(abstractErrors.head + ":\n", "\n", "")
+          else abstractErrors.tail.mkString(abstractErrors.head + "\n", "\n", "")
 
         def abstractClassError(mustBeMixin: Boolean, msg: String): Unit = {
           def prelude = (
-            if (clazz.isAnonymousClass || clazz.isModuleClass) "object creation impossible"
-            else if (mustBeMixin) clazz + " needs to be a mixin"
-            else clazz + " needs to be abstract"
-          ) + ", since"
+            if (clazz.isAnonymousClass || clazz.isModuleClass) "object creation impossible."
+            else if (mustBeMixin) clazz + " needs to be a mixin."
+            else clazz + " needs to be abstract."
+          )
 
           if (abstractErrors.isEmpty) abstractErrors ++= List(prelude, msg)
           else abstractErrors += msg
@@ -646,18 +623,12 @@ abstract class RefChecks extends Transform {
           // If there are numerous missing methods, we presume they are aware of it and
           // give them a nicely formatted set of method signatures for implementing.
           if (missingMethods.size > 1) {
-            abstractClassError(false, "it has " + missingMethods.size + " unimplemented members.")
-            val preface =
-              """|/** As seen from %s, the missing signatures are as follows.
-                 | *  For convenience, these are usable as stub implementations.
-                 | */
-                 |""".stripMargin.format(clazz)
-            abstractErrors += stubImplementations.map("  " + _ + "\n").mkString(preface, "", "")
+            abstractClassError(false, s"Missing implementations for ${missingMethods.size} members. Stub implementations follow:")
+            abstractErrors += stubImplementations.map("  " + _ + "\n").mkString("", "", "")
             return
           }
 
-          for (member <- missing) {
-            def undefined(msg: String) = abstractClassError(false, infoString(member) + " is not defined" + msg)
+          def diagnose(member: Symbol): String = {
             val underlying = analyzer.underlyingSymbol(member) // TODO: don't use this method
 
             // Give a specific error message for abstract vars based on why it fails:
@@ -667,40 +638,41 @@ abstract class RefChecks extends Transform {
 
             if (groupedAccessors.exists(_.isSetter) || (member.isGetter && !isMultiple && member.setterIn(member.owner).exists)) {
               // If both getter and setter are missing, squelch the setter error.
-              if (member.isSetter && isMultiple) ()
-              else undefined(
+              if (member.isSetter && isMultiple) null
+              else {
                 if (member.isSetter) "\n(Note that an abstract var requires a setter in addition to the getter)"
                 else if (member.isGetter && !isMultiple) "\n(Note that an abstract var requires a getter in addition to the setter)"
                 else "\n(Note that variables need to be initialized to be defined)"
-              )
-            }
-            else if (underlying.isMethod) {
-              // If there is a concrete method whose name matches the unimplemented
-              // abstract method, and a cursory examination of the difference reveals
-              // something obvious to us, let's make it more obvious to them.
+              }
+            } else if (underlying.isMethod) {
+              // Highlight any member that nearly matches: same name and arity,
+              // but differs in one param or param list.
               val abstractParamLists = underlying.paramLists
               val matchingName       = clazz.tpe.nonPrivateMembersAdmitting(VBRIDGE)
-              val matchingArity      = matchingName filter { m =>
+              val matchingArity      = matchingName.filter { m =>
                 !m.isDeferred &&
-                (m.name == underlying.name) &&
-                (m.paramLists.length == abstractParamLists.length) &&
-                (m.paramLists.map(_.length).sum == abstractParamLists.map(_.length).sum) &&
-                (m.tpe.typeParams.size == underlying.tpe.typeParams.size)
+                m.name == underlying.name &&
+                sameLength(m.paramLists, abstractParamLists) &&
+                sumSize(m.paramLists, 0) == sumSize(abstractParamLists, 0) &&
+                sameLength(m.tpe.typeParams, underlying.tpe.typeParams)
               }
 
               matchingArity match {
                 // So far so good: only one candidate method
-                case Scope(concrete)   =>
-                  val mismatches  = abstractParamLists.flatten.map(_.tpe) zip concrete.paramLists.flatten.map(_.tpe) filterNot { case (x, y) => x =:= y }
+                case Scope(concrete) =>
+                  val aplIter = abstractParamLists .iterator.flatten
+                  val cplIter = concrete.paramLists.iterator.flatten
+                  def mismatch(apl: Symbol, cpl: Symbol): Option[(Type, Type)] =
+                    if (apl.tpe.asSeenFrom(clazz.tpe, underlying.owner) =:= cpl.tpe) None else Some(apl.tpe -> cpl.tpe)
+
+                  val mismatches = mapFilter2(aplIter, cplIter)(mismatch).take(2).toList
                   mismatches match {
                     // Only one mismatched parameter: say something useful.
                     case (pa, pc) :: Nil  =>
                       val abstractSym = pa.typeSymbol
                       val concreteSym = pc.typeSymbol
-                      def subclassMsg(c1: Symbol, c2: Symbol) = (
-                        ": %s is a subclass of %s, but method parameter types must match exactly.".format(
-                          c1.fullLocationString, c2.fullLocationString)
-                      )
+                      def subclassMsg(c1: Symbol, c2: Symbol) =
+                        s": ${c1.fullLocationString} is a subclass of ${c2.fullLocationString}, but method parameter types must match exactly."
                       val addendum = (
                         if (abstractSym == concreteSym) {
                           // TODO: what is the optimal way to test for a raw type at this point?
@@ -711,7 +683,7 @@ abstract class RefChecks extends Transform {
                           else if (pa.prefix =:= pc.prefix)
                             ": their type parameters differ"
                           else
-                            ": their prefixes (i.e. enclosing instances) differ"
+                            ": their prefixes (i.e., enclosing instances) differ"
                         }
                         else if (abstractSym isSubClass concreteSym)
                           subclassMsg(abstractSym, concreteSym)
@@ -719,26 +691,34 @@ abstract class RefChecks extends Transform {
                           subclassMsg(concreteSym, abstractSym)
                         else ""
                       )
-
-                      undefined("\n(Note that %s does not match %s%s)".format(pa, pc, addendum))
-                    case xs =>
-                      undefined("")
+                      s"\n(Note that $pa does not match $pc$addendum)"
+                    case Nil => // other overriding gotchas
+                      val missingImplicit = abstractParamLists.zip(concrete.paramLists).exists {
+                        case (abss, konkrete) => abss.headOption.exists(_.isImplicit) && !konkrete.headOption.exists(_.isImplicit)
+                      }
+                      val msg = if (missingImplicit) "\n(overriding member must declare implicit parameter list)" else ""
+                      msg
+                    case _ => ""
                   }
-                case _ =>
-                  undefined("")
+                case _ => ""
               }
             }
-            else undefined("")
+            else ""
+          }
+          for (member <- missing ; msg = diagnose(member) ; if msg != null) {
+            val addendum = if (msg.isEmpty) msg else " " + msg
+            val from = if (member.owner != clazz) s" // inherited from ${member.owner}" else ""
+            abstractClassError(false, s"Missing implementation for:\n  ${infoString0(member, false)}$from$addendum")
           }
 
           // Check the remainder for invalid absoverride.
           for (member <- rest ; if (member.isAbstractOverride && member.isIncompleteIn(clazz))) {
             val other = member.superSymbolIn(clazz)
             val explanation =
-              if (other != NoSymbol) " and overrides incomplete superclass member " + infoString(other)
+              if (other != NoSymbol) " and overrides incomplete superclass member\n" + infoString(other)
               else ", but no concrete implementation could be found in a base class"
 
-            abstractClassError(true, infoString(member) + " is marked `abstract' and `override'" + explanation)
+            abstractClassError(true, s"${infoString(member)} is marked `abstract` and `override`$explanation")
           }
         }
 
@@ -755,8 +735,8 @@ abstract class RefChecks extends Transform {
             if (decl.isDeferred && !ignoreDeferred(decl)) {
               val impl = decl.matchingSymbol(clazz.thisType, admit = VBRIDGE)
               if (impl == NoSymbol || (decl.owner isSubClass impl.owner)) {
-                abstractClassError(false, "there is a deferred declaration of "+infoString(decl)+
-                                   " which is not implemented in a subclass"+analyzer.abstractVarMessage(decl))
+                abstractClassError(false, s"No implementation found in a subclass for deferred declaration\n" +
+                                          s"${infoString(decl)}${analyzer.abstractVarMessage(decl)}")
               }
             }
           }
@@ -1004,7 +984,7 @@ abstract class RefChecks extends Transform {
       def erasedClass(tp: Type) = erasure.javaErasure(tp).typeSymbol
 
       /* Symbols which limit the warnings we can issue since they may be value types */
-      val couldBeAnything = Set[Symbol](ObjectClass, ComparableClass, JavaSerializableClass)
+      val couldBeAnything = Set[Symbol](ObjectClass, ComparableClass, SerializableClass)
       def isMaybeValue(sym: Symbol): Boolean = couldBeAnything(erasedClass(sym.tpe))
 
       // Whether def equals(other: Any) has known behavior: it is the default
@@ -1038,7 +1018,7 @@ abstract class RefChecks extends Transform {
       def isMaybeAnyValue(s: Symbol) = isPrimitiveValueClass(unboxedValueClass(s)) || isMaybeValue(s)
       // used to short-circuit unrelatedTypes check if both sides are special
       def isSpecial(s: Symbol) = isMaybeAnyValue(s) || isAnyNumber(s)
-      val nullCount            = onSyms(_ filter (_ == NullClass) size)
+      val nullCount            = onSyms(_.filter(_ == NullClass).size)
       def isNonsenseValueClassCompare = (
            !haveSubclassRelationship
         && isUsingDefaultScalaOp
@@ -1059,7 +1039,7 @@ abstract class RefChecks extends Transform {
 
       def nonSensibleWarning(what: String, alwaysEqual: Boolean) = {
         val msg = alwaysEqual == (name == nme.EQ || name == nme.eq)
-        reporter.warning(pos, s"comparing $what using `${name.decode}' will always yield $msg")
+        reporter.warning(pos, s"comparing $what using `${name.decode}` will always yield $msg")
         isNonSensible = true
       }
       def nonSensible(pre: String, alwaysEqual: Boolean) =
@@ -1232,9 +1212,8 @@ abstract class RefChecks extends Transform {
           reporter.error(tree0.pos, ex.getMessage())
           if (settings.explaintypes) {
             val bounds = tparams map (tp => tp.info.instantiateTypeParams(tparams, argtps).bounds)
-            argtps.lazyZip(bounds).foreach((targ, bound) => explainTypes(bound.lo, targ))
-            argtps.lazyZip(bounds).foreach((targ, bound) => explainTypes(targ, bound.hi))
-            ()
+            foreach2(argtps, bounds)((targ, bound) => explainTypes(bound.lo, targ))
+            foreach2(argtps, bounds)((targ, bound) => explainTypes(targ, bound.hi))
           }
       }
     private def isIrrefutable(pat: Tree, seltpe: Type): Boolean = pat match {
@@ -1279,7 +1258,7 @@ abstract class RefChecks extends Transform {
           reporter.warning(pos, s"${sym.fullLocationString} has changed semantics in version ${sym.migrationVersion.get}:\n${sym.migrationMessage.get}")
       }
       // See an explanation of compileTimeOnly in its scaladoc at scala.annotation.compileTimeOnly.
-      if (sym.isCompileTimeOnly && !currentOwner.ownerChain.exists(x => x.isCompileTimeOnly)) {
+      if (sym.isCompileTimeOnly && !inAnnotation && !currentOwner.ownerChain.exists(x => x.isCompileTimeOnly)) {
         def defaultMsg =
           sm"""Reference to ${sym.fullLocationString} should not have survived past type checking,
               |it should have been processed and eliminated during expansion of an enclosing macro."""
@@ -1353,9 +1332,9 @@ abstract class RefChecks extends Transform {
       }
 
       // types of the value parameters
-      mapParamss(member)(p => checkAccessibilityOfType(p.tpe))
+      foreachParamss(member)(p => checkAccessibilityOfType(p.tpe))
       // upper bounds of type parameters
-      member.typeParams.map(_.info.upperBound.widen) foreach checkAccessibilityOfType
+      member.typeParams.foreach(tp => checkAccessibilityOfType(tp.info.upperBound.widen))
     }
 
     /** Check that a deprecated val or def does not override a
@@ -1418,16 +1397,22 @@ abstract class RefChecks extends Transform {
     private def applyRefchecksToAnnotations(tree: Tree): Unit = {
       def applyChecks(annots: List[AnnotationInfo]): List[AnnotationInfo] = {
         annots.foreach { ann =>
-          checkTypeRef(ann.tpe, tree, skipBounds = false)
-          checkTypeRefBounds(ann.tpe, tree)
+          checkTypeRef(ann.atp, tree, skipBounds = false)
+          checkTypeRefBounds(ann.atp, tree)
           if (ann.original != null && ann.original.hasExistingSymbol)
             checkUndesiredProperties(ann.original.symbol, tree.pos)
         }
-        annots
-          .map(_.transformArgs(transformTrees))
-          .groupBy(_.symbol)
-          .flatMap((groupRepeatableAnnotations _).tupled)
-          .toList
+        val annotsBySymbol = new mutable.LinkedHashMap[Symbol, ListBuffer[AnnotationInfo]]()
+        val transformedAnnots = {
+          val saved = inAnnotation
+          inAnnotation = true
+          try annots.map(_.transformArgs(transformTrees)) finally inAnnotation = saved
+        }
+        for (transformedAnnot <- transformedAnnots) {
+          val buffer = annotsBySymbol.getOrElseUpdate(transformedAnnot.symbol, new ListBuffer)
+          buffer += transformedAnnot
+        }
+        annotsBySymbol.iterator.flatMap(x => groupRepeatableAnnotations(x._1, x._2.toList)).toList
       }
 
       // assumes non-empty `anns`
@@ -1462,7 +1447,7 @@ abstract class RefChecks extends Transform {
           reporter.error(sym.pos, s"${sym.name}: Only concrete methods can be marked @elidable.$rest")
         }
       }
-      if (settings.isScala213) checkIsElidable(tree.symbol)
+      if (currentRun.isScala213) checkIsElidable(tree.symbol)
 
       tree match {
         case m: MemberDef =>
@@ -1553,26 +1538,6 @@ abstract class RefChecks extends Transform {
             isIrrefutable(pat1, tpt.tpe) && (qual.tpe <:< tree.tpe)) =>
 
           transform(qual)
-      case StringContextIntrinsic(treated, args) =>
-        var result: Tree = treated.head
-        def concat(t: Tree): Unit = {
-          result = atPos(t.pos)(gen.mkMethodCall(gen.mkAttributedSelect(result, definitions.String_+), t :: Nil)).setType(StringTpe)
-        }
-        val numLits = treated.length
-        foreachWithIndex(treated.tail) { (lit, i) =>
-          val treatedContents = lit.asInstanceOf[Literal].value.stringValue
-          val emptyLit = treatedContents.isEmpty
-          if (i < numLits - 1) {
-            concat(args(i))
-            if (!emptyLit) concat(lit)
-          } else if (!emptyLit) {
-            concat(lit)
-          }
-        }
-        result match {
-          case ap: Apply => transformApply(ap)
-          case _ => result
-        }
       case Apply(fn, args) =>
         // sensicality should be subsumed by the unreachability/exhaustivity/irrefutability
         // analyses in the pattern matcher
@@ -1584,37 +1549,6 @@ abstract class RefChecks extends Transform {
         tree
     }
 
-    private object StringContextIntrinsic {
-      def unapply(t: Apply): Option[(List[Tree], List[Tree])] = {
-        val sym = t.fun.symbol
-        // symbol check done first for performance
-        val rd = currentRun.runDefinitions
-        if (sym == rd.StringContext_s || sym == rd.StringContext_raw) {
-          t match {
-            case Apply(fn @ Select(Apply(qual1 @ Select(qual, _), lits), _), args)
-              if qual1.symbol == rd.StringContext_apply &&
-                treeInfo.isQualifierSafeToElide(qual) &&
-                lits.forall(lit => treeInfo.isLiteralString(lit)) &&
-                lits.length == (args.length + 1) =>
-              val isRaw = sym == rd.StringContext_raw
-              if (isRaw) Some((lits, args))
-              else {
-                try {
-                  val treated = lits.mapConserve { lit =>
-                    val stringVal = lit.asInstanceOf[Literal].value.stringValue
-                    val k = Constant(StringContext.processEscapes(stringVal))
-                    treeCopy.Literal(lit, k).setType(ConstantType(k))
-                  }
-                  Some((treated, args))
-                } catch {
-                  case _: StringContext.InvalidEscapeException => None
-                }
-              }
-            case _ => None
-          }
-        } else None
-      }
-    }
     private def transformSelect(tree: Select): Tree = {
       val Select(qual, _) = tree
       val sym = tree.symbol
@@ -1670,7 +1604,7 @@ abstract class RefChecks extends Transform {
         // on Unit, in which case we had better let it slide.
         val isOk = (
              sym.isGetter
-          || (sym.name containsName nme.DEFAULT_GETTER_STRING)
+          || sym.isDefaultGetter
           || sym.allOverriddenSymbols.exists(over => !(over.tpe.resultType =:= sym.tpe.resultType))
         )
         if (!isOk)
@@ -1684,7 +1618,7 @@ abstract class RefChecks extends Transform {
         if (clazz.isTrait)
           reporter.error(clazz.pos, "Only classes (not traits) are allowed to extend AnyVal")
         else if (clazz.hasAbstractFlag)
-          reporter.error(clazz.pos, "`abstract' modifier cannot be used with value classes")
+          reporter.error(clazz.pos, "`abstract` modifier cannot be used with value classes")
       }
     }
 

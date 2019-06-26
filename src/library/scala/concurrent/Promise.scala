@@ -17,6 +17,10 @@ import scala.util.{ Try, Success, Failure }
 /** Promise is an object which can be completed with a value or failed
  *  with an exception.
  *
+ *  A promise should always eventually be completed, whether for success or failure, 
+ *  in order to avoid unintended resource retention for any associated Futures' 
+ *  callbacks or transformations.
+ *
  *  @define promiseCompletion
  *  If the promise has already been fulfilled, failed or has timed out,
  *  calling this method will throw an IllegalStateException.
@@ -65,9 +69,9 @@ trait Promise[T] {
    *  @return   This promise
    */
    def completeWith(other: Future[T]): this.type = {
-    if (other ne this.future) { // this tryCompleteWith this doesn't make much sense
-      other.onComplete(this tryComplete _)(Future.InternalCallbackExecutor)
-    }
+    if (other ne this.future) // this tryCompleteWith this doesn't make much sense
+      other.onComplete(this tryComplete _)(ExecutionContext.parasitic)
+
     this
   }
 
@@ -113,7 +117,7 @@ trait Promise[T] {
   def tryFailure(cause: Throwable): Boolean = tryComplete(Failure(cause))
 }
 
-final object Promise {
+object Promise {
   /** Creates a promise object which can be completed with a value.
    *
    *  @tparam T       the type of the value in the promise

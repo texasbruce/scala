@@ -26,9 +26,6 @@ import scala.collection.mutable.ListBuffer
 import scala.annotation.switch
 import scala.util.control.NonFatal
 
-/** @author Martin Odersky
- *  @version 1.0
- */
 abstract class UnPickler {
   val symbolTable: SymbolTable
   import symbolTable._
@@ -249,6 +246,9 @@ abstract class UnPickler {
             owner.newLocalDummy(NoPosition)
           else NoSymbol
         }
+
+        if (owner == definitions.ScalaPackageClass && name == tpnme.AnyRef)
+          return definitions.AnyRefClass
 
         // (1) Try name.
         localDummy orElse fromName(name) orElse {
@@ -474,7 +474,7 @@ abstract class UnPickler {
     private def readArrayAnnot() = {
       readByte() // skip the `annotargarray` tag
       val end = readEnd()
-      until(end, () => readClassfileAnnotArg(readNat())).toArray(JavaArgumentTag)
+      until(end, () => readClassfileAnnotArg(readNat())).toArray
     }
     protected def readClassfileAnnotArg(i: Int): ClassfileAnnotArg = bytes(index(i)) match {
       case ANNOTINFO     => NestedAnnotArg(at(i, () => readAnnotation()))
