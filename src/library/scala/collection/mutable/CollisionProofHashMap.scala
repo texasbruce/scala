@@ -13,11 +13,9 @@
 package scala.collection
 package mutable
 
-import scala.annotation.meta.{getter, setter}
-import scala.annotation.{ implicitNotFound, tailrec }
+import scala.annotation.{implicitNotFound, tailrec}
 import scala.annotation.unchecked.uncheckedVariance
 import scala.collection.generic.DefaultSerializationProxy
-import scala.collection.mutable
 import scala.runtime.Statics
 
 /** This class implements mutable maps using a hashtable with red-black trees in the buckets for good
@@ -385,7 +383,7 @@ final class CollisionProofHashMap[K, V](initialCapacity: Int, loadFactor: Double
 
   protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(new CollisionProofHashMap.DeserializationFactory[K, V](table.length, loadFactor, ordering), this)
 
-  override protected[this] def stringPrefix = "CollisionProofHashMap"
+  override protected[this] def className = "CollisionProofHashMap"
 
   override def getOrElseUpdate(key: K, defaultValue: => V): V = {
     val hash = computeHash(key)

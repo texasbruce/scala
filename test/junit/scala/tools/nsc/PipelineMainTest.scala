@@ -5,7 +5,7 @@ import java.nio.charset.Charset
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.{FileVisitResult, Files, Path, SimpleFileVisitor}
 
-import org.junit.{After, Before, Ignore, Test}
+import org.junit.{After, Before, Test}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -32,17 +32,14 @@ class PipelineMainTest {
 
   private def projectsBase = createDir(base, "projects")
 
-  @Ignore("scala/scala-dev#637")
   @Test def pipelineMainBuildsSeparate(): Unit = {
     check(allBuilds.map(_.projects))
   }
 
-  @Ignore("scala/scala-dev#637")
   @Test def pipelineMainBuildsCombined(): Unit = {
     check(List(allBuilds.flatMap(_.projects)))
   }
 
-  @Ignore("scala/scala-dev#637")
   @Test def pipelineMainBuildsJavaAccessor(): Unit = {
     // Tests the special case in Typer:::canSkipRhs to make outline typing descend into method bodies might
     // give rise to super accssors
@@ -56,7 +53,7 @@ class PipelineMainTest {
     cachePlugin = true,
     stripExternalClassPath = true,
     useTraditionalForLeaf = true,
-    createReporter = ((s: Settings) => if (debug) new ConsoleReporter(s) else new StoreReporter())
+    createReporter = ((s: Settings) => if (debug) new ConsoleReporter(s) else new StoreReporter(s))
   )
 
   private def check(projectss: List[List[Build#Project]], altStrategies: List[BuildStrategy] = List(Pipeline, OutlineTypePipeline)): Unit = {
@@ -243,7 +240,7 @@ class PipelineMainTest {
         this
       }
       def argsFile(extraOpts: List[String]): Path = {
-        val cp = if (classpath.isEmpty) Nil else List("-cp", classpath.mkString(File.pathSeparator))
+        val cp = List("-cp", if (classpath.isEmpty) "__DUMMY__" else classpath.mkString(File.pathSeparator)) // Dummy to avoid default classpath of "."
         val printArgs = if (debug) List("-Xprint-args", "-") else Nil
         val entries = List(
           Build.this.scalacOptions.toList,

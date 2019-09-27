@@ -17,6 +17,7 @@ import java.lang.Thread.UncaughtExceptionHandler
 import java.nio.file.attribute.FileTime
 import java.nio.file.{Files, Path, Paths}
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.{Collections, Locale}
 
@@ -27,6 +28,7 @@ import scala.collection.{immutable, mutable}
 import scala.concurrent._
 import scala.concurrent.duration.Duration
 import scala.jdk.CollectionConverters._
+import scala.math.Ordering.Double.TotalOrdering
 import scala.reflect.internal.pickling.PickleBuffer
 import scala.reflect.internal.util.{BatchSourceFile, FakePos, NoPosition, Position}
 import scala.reflect.io.{PlainNioFile, RootPath}
@@ -43,11 +45,14 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
     val newExtension = if (useJars) ".jar" else ""
     val root = file.getRoot
     // An empty component on Unix, just the drive letter on Windows
-    val validRootPathComponent = root.toString.replaceAllLiterally("/", "").replaceAllLiterally(":", "")
-    changeExtension(pickleCache.resolve(validRootPathComponent).resolve(root.relativize(file)).normalize(), newExtension)
+    val validRootPathComponent = root.toString.replace("/", "").replace(":", "")
+    val result = changeExtension(pickleCache.resolve(validRootPathComponent).resolve(root.relativize(file)).normalize(), newExtension)
+    if (useJars) Files.createDirectories(result.getParent)
+    strippedAndExportedClassPath.put(file.toRealPath().normalize(), result)
+    result
   }
 
-  private val strippedAndExportedClassPath = mutable.HashMap[Path, Path]()
+  private val strippedAndExportedClassPath = new ConcurrentHashMap[Path, Path]().asScala
 
   /** Forward errors to the (current) reporter. */
   protected def scalacError(msg: String): Unit = {
@@ -64,7 +69,6 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
   }
 
   implicit val executor = ExecutionContext.fromExecutor(new java.util.concurrent.ForkJoinPool(parallelism), t => handler.uncaughtException(Thread.currentThread(), t))
-  val fileManager = ToolProvider.getSystemJavaCompiler.getStandardFileManager(null, null, null)
   def changeExtension(p: Path, newExtension: String): Path = {
     val fileName = p.getFileName.toString
     val changedFileName = fileName.lastIndexOf('.') match {
@@ -73,51 +77,6 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
     }
     p.getParent.resolve(changedFileName)
   }
-
-  def registerPickleClassPath[G <: Global](output: Path, data: mutable.AnyRefMap[G#Symbol, PickleBuffer]): Unit = {
-    val jarPath = cachePath(output)
-    val root = RootPath(jarPath, writable = true)
-    Files.createDirectories(root.root)
-
-    val dirs = mutable.Map[G#Symbol, Path]()
-    def packageDir(packSymbol: G#Symbol): Path = {
-      if (packSymbol.isEmptyPackageClass) root.root
-      else if (dirs.contains(packSymbol)) dirs(packSymbol)
-      else if (packSymbol.owner.isRoot) {
-        val subDir = root.root.resolve(packSymbol.encodedName)
-        Files.createDirectories(subDir)
-        dirs.put(packSymbol, subDir)
-        subDir
-      } else {
-        val base = packageDir(packSymbol.owner)
-        val subDir = base.resolve(packSymbol.encodedName)
-        Files.createDirectories(subDir)
-        dirs.put(packSymbol, subDir)
-        subDir
-      }
-    }
-    val written = new java.util.IdentityHashMap[AnyRef, Unit]()
-    try {
-      for ((symbol, pickle) <- data) {
-        if (!written.containsKey(pickle)) {
-          val base = packageDir(symbol.owner)
-          val primary = base.resolve(symbol.encodedName + ".sig")
-          val writer = new BufferedOutputStream(Files.newOutputStream(primary))
-          try {
-            writer.write(pickle.bytes, 0, pickle.writeIndex)
-          } finally {
-            writer.close()
-          }
-          written.put(pickle, ())
-        }
-      }
-    } finally {
-      root.close()
-    }
-    Files.setLastModifiedTime(jarPath, FileTime.from(Instant.now()))
-    strippedAndExportedClassPath.put(output.toRealPath().normalize(), jarPath)
-  }
-
 
   def writeDotFile(logDir: Path, dependsOn: mutable.LinkedHashMap[Task, List[Dependency]]): Unit = {
     val builder = new java.lang.StringBuilder()
@@ -255,6 +214,7 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
               p.fullCompile()
               Future.traverse(p.groups)(_.done.future)
             }
+            _ <- Future.traverse(dependsOn.getOrElse(p, Nil))(task => task.t.javaDone.future)
           } yield {
             p.javaCompile()
           }
@@ -294,6 +254,7 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
               // Start javac after scalac has completely finished
               Future.traverse(p.groups)(_.done.future)
             }
+            _ <- Future.traverse(dependsOn.getOrElse(p, Nil))(task => task.t.javaDone.future)
           } yield {
             p.javaCompile()
           }
@@ -351,7 +312,7 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
       writeChromeTrace(dir, projects)
     }
     deleteTempPickleCache()
-    true
+    !reporter.hasErrors
   }
 
   private def deleteTempPickleCache(): Unit = {
@@ -374,7 +335,6 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
       if (p.outlineTimer.durationMicros > 0d) {
         val desc = if (strategy == OutlineTypePipeline) "outline-type" else "parser-to-pickler"
         events += durationEvent(p.label, desc, p.outlineTimer)
-        events += durationEvent(p.label, "pickle-export", p.pickleExportTimer)
       }
       for ((g, ix) <- p.groups.zipWithIndex) {
         if (g.timer.durationMicros > 0d)
@@ -452,7 +412,6 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
     val isGrouped = groups.size > 1
 
     val outlineTimer = new Timer()
-    val pickleExportTimer = new Timer
     val javaTimer = new Timer()
 
     var outlineCriticalPathMs = 0d
@@ -490,14 +449,11 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
         command.settings.Youtline.value = true
         command.settings.stopAfter.value = List("pickler")
         command.settings.Ymacroexpand.value = command.settings.MacroExpand.None
+        command.settings.YpickleWrite.value = cachePath(command.settings.outputDirs.getSingleOutput.get.file.toPath).toAbsolutePath.toString
         val run1 = new compiler.Run()
         run1 compile files
         outlineTimer.stop()
         log(f"scalac outline: done ${outlineTimer.durationMs}%.0f ms")
-        pickleExportTimer.start()
-        registerPickleClassPath(command.settings.outputDirs.getSingleOutput.get.file.toPath, run1.symData)
-        pickleExportTimer.stop()
-        log(f"scalac: exported pickles ${pickleExportTimer.durationMs}%.0f ms")
         reporter.finish()
         if (reporter.hasErrors) {
           log("scalac outline: failed")
@@ -517,6 +473,7 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
       command.settings.Youtline.value = false
       command.settings.stopAfter.value = Nil
       command.settings.Ymacroexpand.value = command.settings.MacroExpand.Normal
+      command.settings.YpickleWrite.value = ""
 
       val groupCount = groups.size
       for ((group, ix) <- groups.zipWithIndex) {
@@ -551,18 +508,14 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
       assert(groups.size == 1)
       val group = groups.head
       log("scalac: start")
+      command.settings.YpickleWrite.value = cachePath(command.settings.outputDirs.getSingleOutput.get.file.toPath).toString
       outlineTimer.start()
       try {
         val run2 = new compiler.Run() {
-
           override def advancePhase(): Unit = {
             if (compiler.phase == this.picklerPhase) {
               outlineTimer.stop()
               log(f"scalac outline: done ${outlineTimer.durationMs}%.0f ms")
-              pickleExportTimer.start()
-              registerPickleClassPath(command.settings.outputDirs.getSingleOutput.get.file.toPath, symData)
-              pickleExportTimer.stop()
-              log(f"scalac: exported pickles ${pickleExportTimer.durationMs}%.0f ms")
               outlineDone.complete(Success(()))
               group.timer.start()
             }
@@ -611,10 +564,9 @@ class PipelineMainClass(argFiles: Seq[Path], pipelineSettings: PipelineMain.Pipe
                 Position.range(sourceFile, diagnostic.getStartPosition.toInt, diagnostic.getPosition.toInt, diagnostic.getEndPosition.toInt)
               }
               diagnostic.getKind match {
-                case Kind.ERROR => reporter.error(position, msg)
+                case Kind.ERROR                            => reporter.error(position, msg)
                 case Kind.WARNING | Kind.MANDATORY_WARNING => reporter.warning(position, msg)
-                case Kind.NOTE => reporter.info(position, msg, true)
-                case Kind.OTHER => reporter.echo(position, msg)
+                case Kind.NOTE | Kind.OTHER                => reporter.echo(position, msg)
               }
             }
           }

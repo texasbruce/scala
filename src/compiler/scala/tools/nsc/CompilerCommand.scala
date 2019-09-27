@@ -14,8 +14,6 @@ package scala.tools.nsc
 
 import java.nio.file.Files
 
-import io.File
-
 /** A class representing command line info for scalac */
 class CompilerCommand(arguments: List[String], val settings: Settings) {
   def this(arguments: List[String], error: String => Unit) = this(arguments, new Settings(error))
@@ -123,7 +121,7 @@ class CompilerCommand(arguments: List[String], val settings: Settings) {
       val components = global.phaseNames // global.phaseDescriptors // one initializes
       s"Phase graph of ${components.size} components output to ${genPhaseGraph.value}*.dot."
     }
-    else allSettings.filter(_.isHelping).map(_.help).mkString("\n\n")
+    else allSettings.valuesIterator.filter(_.isHelping).map(_.help).mkString("\n\n")
   }
 
   /**
@@ -133,7 +131,7 @@ class CompilerCommand(arguments: List[String], val settings: Settings) {
   def expandArg(arg: String): List[String] = {
     def stripComment(s: String) = s takeWhile (_ != '#')
     import java.nio.file._
-    import collection.JavaConverters._
+    import scala.jdk.CollectionConverters._
     val file = Paths.get(arg stripPrefix "@")
     if (!Files.exists(file))
       throw new java.io.FileNotFoundException("argument file %s could not be found" format file)

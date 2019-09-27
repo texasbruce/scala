@@ -99,7 +99,6 @@ final class HashSet[A](initialCapacity: Int, loadFactor: Double)
         this
       case _ => super.addAll(xs)
     }
-    super.addAll(xs)
   }
 
   override def subtractAll(xs: IterableOnce[A]): this.type = {
@@ -360,7 +359,7 @@ final class HashSet[A](initialCapacity: Int, loadFactor: Double)
 
   protected[this] def writeReplace(): AnyRef = new DefaultSerializationProxy(new HashSet.DeserializationFactory[A](table.length, loadFactor), this)
 
-  override protected[this] def stringPrefix = "HashSet"
+  override protected[this] def className = "HashSet"
 }
 
 /**

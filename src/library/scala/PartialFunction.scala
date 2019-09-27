@@ -54,7 +54,7 @@ package scala
  *
  *  @note Optional [[Function]]s, [[PartialFunction]]s and extractor objects
  *        can be converted to each other as shown in the following table.
- *
+ *  &nbsp;
  * | How to convert ... | to a [[PartialFunction]] | to an optional [[Function]] | to an extractor |
  * | :---:  | ---  | --- | --- |
  * | from a [[PartialFunction]] | [[Predef.identity]] | [[lift]] | [[Predef.identity]] |
@@ -75,11 +75,11 @@ trait PartialFunction[-A, +B] extends (A => B) { self =>
    *
    *           Seq("foo", "bar", "baz") match {
    *             case firstChar.unlift.elementWise(c0, c1, c2) =>
-   *               println(s"$c0, $c1, $c2") // Output: f, b, b
+   *               println(s"\$c0, \$c1, \$c2") // Output: f, b, b
    *           }
    *           }}}
    */
-  def elementWise = new ElementWiseExtractor(this)
+  def elementWise: ElementWiseExtractor[A, B] = new ElementWiseExtractor[A, B](this)
 
   /** Checks if a value is contained in the function's domain.
    *
@@ -327,7 +327,7 @@ object PartialFunction {
     case ff => new Unlifted(ff)
   }
 
-  /**  Converts an ordinary function to a partial function. Note that calling `isDefinedAt(x)` on 
+  /**  Converts an ordinary function to a partial function. Note that calling `isDefinedAt(x)` on
    *   this partial function will return `true` for every `x`.
    *   @param  f  an ordinary function
    *   @return    a partial function which delegates to the ordinary function `f`

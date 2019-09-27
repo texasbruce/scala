@@ -235,7 +235,7 @@ private[internal] trait TypeMaps {
 
     def foldOver(scope: Scope): Unit = {
       val elems = scope.toList
-      val elems1 = foldOver(elems)
+      foldOver(elems)
     }
 
     def foldOverAnnotations(annots: List[AnnotationInfo]): Unit =
@@ -260,10 +260,15 @@ private[internal] trait TypeMaps {
 
   abstract class TypeCollector[T](initial: T) extends TypeFolder {
     var result: T = _
-    def collect(tp: Type) = {
-      result = initial
-      apply(tp)
-      result
+    def collect(tp: Type): T = {
+      val saved = result
+      try {
+        result = initial
+        apply(tp)
+        result
+      } finally {
+        result = saved // support reentrant use of a single instance of this collector.
+      }
     }
   }
 
@@ -999,13 +1004,9 @@ private[internal] trait TypeMaps {
     }
   }
 
-  /** A map to convert every occurrence of a wildcard type to a fresh
-    *  type variable */
-  object wildcardToTypeVarMap extends TypeMap {
-    def apply(tp: Type): Type = tp match {
-      case pt: ProtoType => TypeVar(tp, new TypeConstraint(pt.toBounds))
-      case _ => tp.mapOver(this)
-    }
+  /** A map that is conceptually an identity, but in practice may perform some side effects. */
+  object identityTypeMap extends TypeMap {
+    def apply(tp: Type): Type = tp.mapOver(this)
   }
 
   /** A map to convert each occurrence of a type variable to its origin. */

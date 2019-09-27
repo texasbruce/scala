@@ -928,7 +928,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     def migrationMessage     = getAnnotation(MigrationAnnotationClass) flatMap { _.stringArg(0) }
     def migrationVersion     = getAnnotation(MigrationAnnotationClass) flatMap { _.stringArg(1) }
     def elisionLevel         = getAnnotation(ElidableMethodClass) flatMap { _.intArg(0) }
-    def implicitNotFoundMsg  = getAnnotation(ImplicitNotFoundClass) flatMap { _.stringArg(0) }
+    def implicitNotFoundMsg  = getAnnotation(ImplicitNotFoundClass).flatMap(_.stringArg(0))
     def implicitAmbiguousMsg = getAnnotation(ImplicitAmbiguousClass) flatMap { _.stringArg(0) }
 
     def isCompileTimeOnly       = hasAnnotation(CompileTimeOnlyAttr)
@@ -1553,7 +1553,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     }
 
     def info_=(info: Type): Unit = {
-      assert(info ne null)
+      assert(info ne null, "Can't assign a null type")
       infos = TypeHistory(currentPeriod, info, null)
       unlock()
       _validTo = if (info.isComplete) currentPeriod else NoPeriod
@@ -1607,7 +1607,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
       val outer = Symbols.this
 
       var infos = this.infos
-      outer.assert(infos != null)
+      outer.assert(infos != null, "infos must not be null")
 
       if (_validTo != NoPeriod) {
         val curPeriod = outer.currentPeriod
@@ -1664,8 +1664,8 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
     // adapt to new run in fsc.
     private def adaptInfo(oldest: TypeHistory): TypeHistory = {
-      assert(isCompilerUniverse)
-      assert(oldest.prev == null)
+      assert(isCompilerUniverse, "Must be compiler universe")
+      assert(oldest.prev == null, "Previous history must be null")
       val pid = phaseId(oldest.validFrom)
 
       _validTo = period(currentRunId, pid)
@@ -1698,7 +1698,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
     /** Was symbol's type updated during given phase? */
     final def hasTypeAt(pid: Phase#Id): Boolean = {
-      assert(isCompilerUniverse)
+      assert(isCompilerUniverse, "Must be compiler universe")
       var infos = this.infos
       while ((infos ne null) && phaseId(infos.validFrom) > pid) infos = infos.prev
       infos ne null
@@ -2883,11 +2883,11 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
     override def isLocalDummy       = nme.isLocalDummyName(name)
 
-    override def isClassConstructor = name == nme.CONSTRUCTOR
-    override def isMixinConstructor = name == nme.MIXIN_CONSTRUCTOR
+    override def isClassConstructor = rawname == nme.CONSTRUCTOR
+    override def isMixinConstructor = rawname == nme.MIXIN_CONSTRUCTOR
     override def isConstructor      = isClassConstructor || isMixinConstructor
 
-    override def isPackageObject    = isModule && (name == nme.PACKAGE)
+    override def isPackageObject    = isModule && (rawname == nme.PACKAGE)
 
     // The name in comments is what it is being disambiguated from.
     // TODO - rescue CAPTURED from BYNAMEPARAM so we can see all the names.
@@ -3644,9 +3644,13 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
    *  @return           the new list of info-adjusted symbols
    */
   def deriveSymbols(syms: List[Symbol], symFn: Symbol => Symbol): List[Symbol] = {
-    val syms1 = mapList(syms)(symFn)
-    syms1.foreach(_.substInfo(syms, syms1))
-    syms1
+    if (syms.isEmpty) Nil
+    else {
+      val syms1 = mapList(syms)(symFn)
+      val map = new SubstSymMap(syms, syms1)
+      syms1.foreach(_.modifyInfo(map))
+      syms1
+    }
   }
 
   /** Derives a new list of symbols from the given list by mapping the given

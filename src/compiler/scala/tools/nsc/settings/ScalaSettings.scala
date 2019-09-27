@@ -24,14 +24,14 @@ import scala.annotation.elidable
 import scala.tools.util.PathResolver.Defaults
 import scala.collection.mutable
 import scala.reflect.internal.util.StringContextStripMarginOps
+import scala.tools.nsc.util.DefaultJarFactory
 
-trait ScalaSettings extends AbsScalaSettings
-                       with StandardScalaSettings
-                       with Warnings {
+
+trait ScalaSettings extends StandardScalaSettings with Warnings {
   self: MutableSettings =>
 
   /** Set of settings */
-  protected[scala] lazy val allSettings = mutable.HashSet[Setting]()
+  protected[scala] lazy val allSettings = mutable.LinkedHashMap[String, Setting]()
 
   /** The user class path, specified by `-classpath` or `-cp`,
    *  defaults to the value of CLASSPATH env var if it is set, as in Java,
@@ -43,10 +43,10 @@ trait ScalaSettings extends AbsScalaSettings
   def infoSettings = List[Setting](version, help, Vhelp, Whelp, Xhelp, Yhelp, showPlugins, showPhases, genPhaseGraph, printArgs)
 
   /** Is an info setting set? Any -option:help? */
-  def isInfo = infoSettings.exists(_.isSetByUser) || allSettings.exists(_.isHelping)
+  def isInfo = infoSettings.exists(_.isSetByUser) || allSettings.valuesIterator.exists(_.isHelping)
 
   /** Disable a setting */
-  def disable(s: Setting) = allSettings -= s
+  def disable(s: Setting) = allSettings -= s.name
 
   val jvmargs  = PrefixSetting("-J<flag>", "-J", "Pass <flag> directly to the runtime system.")
   val defines  = PrefixSetting("-Dproperty=value", "-D", "Pass -Dproperty=value directly to the runtime system.")
@@ -110,7 +110,7 @@ trait ScalaSettings extends AbsScalaSettings
    */
   val Xhelp              = BooleanSetting      ("-X", "Print a synopsis of advanced options.")
   val checkInit          = BooleanSetting      ("-Xcheckinit", "Wrap field accessors to throw an exception on uninitialized access.")
-  val developer          = BooleanSetting      ("-Xdev", "Indicates user is a developer - issue warnings about anything which seems amiss")
+  val developer          = BooleanSetting      ("-Xdev", "Issue warnings about anything which seems amiss in compiler internals. Intended for compiler developers")
   val noassertions       = BooleanSetting      ("-Xdisable-assertions", "Generate no assertions or assumptions.") andThen (flag =>
                                                 if (flag) elidebelow.value = elidable.ASSERTION + 1)
   val elidebelow         = IntSetting          ("-Xelide-below", "Calls to @elidable methods are omitted if method priority is lower than argument",
@@ -133,7 +133,7 @@ trait ScalaSettings extends AbsScalaSettings
   val script             = StringSetting       ("-Xscript", "object", "Treat the source file as a script and wrap it in a main method.", "")
   val mainClass          = StringSetting       ("-Xmain-class", "path", "Class for manifest's Main-Class entry (only useful with -d <jar>)", "")
   val sourceReader       = StringSetting       ("-Xsource-reader", "classname", "Specify a custom method for reading source files.", "")
-  val reporter           = StringSetting       ("-Xreporter", "classname", "Specify a custom reporter for compiler messages.", "scala.tools.nsc.reporters.ConsoleReporter")
+  val reporter           = StringSetting       ("-Xreporter", "classname", "Specify a custom subclass of FilteringReporter for compiler messages.", "scala.tools.nsc.reporters.ConsoleReporter")
   val source             = ScalaVersionSetting ("-Xsource", "version", "Treat compiler input as Scala source for the specified version, see scala/bug#8126.", initial = ScalaVersion("2.13"))
 
   val XnoPatmatAnalysis = BooleanSetting ("-Xno-patmat-analysis", "Don't perform exhaustivity/unreachability analysis. Also, ignore @switch annotation.")
@@ -257,11 +257,14 @@ trait ScalaSettings extends AbsScalaSettings
   val exposeEmptyPackage = BooleanSetting ("-Yexpose-empty-package", "Internal only: expose the empty package.").internalOnly()
   val Ydelambdafy        = ChoiceSetting  ("-Ydelambdafy", "strategy", "Strategy used for translating lambdas into JVM code.", List("inline", "method"), "method")
 
+  // Allows a specialised jar to be written. For instance one that provides stable hashing of content, or customisation of the file storage
+  val YjarFactory = StringSetting   ("-YjarFactory", "classname", "factory for jar files", classOf[DefaultJarFactory].getName)
   val YaddBackendThreads = IntSetting   ("-Ybackend-parallelism", "maximum worker threads for backend", 1, Some((1,16)), (x: String) => None )
   val YmaxQueue = IntSetting   ("-Ybackend-worker-queue", "backend threads worker queue size", 0, Some((0,1000)), (x: String) => None )
   val YjarCompressionLevel = IntSetting("-Yjar-compression-level", "compression level to use when writing jar files",
     Deflater.DEFAULT_COMPRESSION, Some((Deflater.DEFAULT_COMPRESSION,Deflater.BEST_COMPRESSION)), (x: String) => None)
   val YpickleJava = BooleanSetting("-Ypickle-java", "Pickler phase should compute pickles for .java defined symbols for use by build tools").internalOnly()
+  val YpickleWrite = StringSetting("-Ypickle-write", "directory|jar", "destination for generated .sig files containing type signatures.", "", None).internalOnly()
 
   sealed abstract class CachePolicy(val name: String, val help: String)
   object CachePolicy {
@@ -508,6 +511,8 @@ trait ScalaSettings extends AbsScalaSettings
   val YpresentationLog     = StringSetting("-Ypresentation-log", "file", "Log presentation compiler events into file", "")
   val YpresentationReplay  = StringSetting("-Ypresentation-replay", "file", "Replay presentation compiler events from file", "")
   val YpresentationDelay   = IntSetting("-Ypresentation-delay", "Wait number of ms after typing before starting typechecking", 0, Some((0, 999)), str => Some(str.toInt))
+
+  val YpresentationLocateSourceFile = BooleanSetting("-Ypresentation-locate-source-file", "Enables legacy code in the classfile parser to locate a .scala file in the output directories corresponding to the SourceFile attribute .class file.")
 
   /**
    * -P "Plugin" settings
